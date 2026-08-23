@@ -13,6 +13,16 @@ param(
 $ErrorActionPreference = "Stop"
 Write-Host "== Orion AI installer ==" -ForegroundColor Cyan
 
+# License gate: no key, no install. The public installer only carries HASHES of
+# valid keys, so the key list can't be read out of it. Orion issues the keys.
+$AllowedKeyHashes = @("abd0fb08d15c821c012a6c6f0ed5385ad0adbc2c953527893b782ec1fe880ce1")
+$Key = $env:ORION_KEY
+if (-not $Key) { $Key = Read-Host "Enter your Orion license key" }
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$h = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Key.Trim())))).Replace("-","").ToLower()
+if ($AllowedKeyHashes -notcontains $h) { Write-Error "Invalid or missing license key. Contact Orion ($($env:ORION_SUPPORT_EMAIL)) to get one."; exit 1 }
+Write-Host "License OK" -ForegroundColor Green
+
 if (-not $Repo) { Write-Error "Set -Repo (or `$env:ORION_DEPLOY_REPO) to the client deployment repo URL."; exit 1 }
 foreach ($tool in @("git","node")) {
   if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { Write-Error "$tool is required but not installed. Install it first (git-scm.com / nodejs.org), then re-run."; exit 1 }
