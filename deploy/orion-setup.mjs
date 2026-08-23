@@ -44,7 +44,28 @@ const CLIENT_NAME = THEME.clientName || "";
 const BOOK_URL = THEME.bookUrl || "https://book.orion-jones.com";
 const PROJECTS = Array.isArray(THEME.projects) ? THEME.projects : [];   // [{name,status}]
 const ROUTINES = Array.isArray(THEME.routines) ? THEME.routines : [];   // [{name,schedule}]
-const UPDATES = Array.isArray(THEME.updates) ? THEME.updates : [];      // [{date,text}]
+let UPDATES = Array.isArray(THEME.updates) ? THEME.updates : [];        // [{date,text}]
+// Live patch notes: the terminal fetches a feed Orion controls, so an update he
+// publishes shows up in every client's terminal without a reinstall. Falls back
+// to the bundled theme.updates if offline. Override the URL via theme.updatesUrl.
+const UPDATES_URL = THEME.updatesUrl || "https://raw.githubusercontent.com/sriptcollector/orion-ai/main/deploy/updates.json";
+async function fetchRemoteUpdates() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    const r = await fetch(UPDATES_URL, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return;
+    const remote = await r.json();
+    const list = Array.isArray(remote) ? remote : (Array.isArray(remote?.updates) ? remote.updates : []);
+    if (list.length) {
+      const seen = new Set();
+      UPDATES = [...list, ...UPDATES]
+        .filter((u) => u && u.text && !seen.has(u.date + u.text) && seen.add(u.date + u.text))
+        .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    }
+  } catch {}
+}
 
 // Custom accent color per client (hex -> ANSI truecolor). Falls back to cyan.
 function parseHex(hex) {
@@ -522,4 +543,6 @@ if (!process.stdin.isTTY) {
   console.log(C.gray + "  Run this in a terminal to configure: node deploy/orion-setup.mjs" + C.reset);
   process.exit(0);
 }
-licenseGate().then((ok) => ok ? mainMenu() : null).then(() => process.exit(0));
+licenseGate()
+  .then((ok) => ok ? fetchRemoteUpdates().then(mainMenu) : null)
+  .then(() => process.exit(0));
