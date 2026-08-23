@@ -67,6 +67,54 @@ async function fetchRemoteUpdates() {
   } catch {}
 }
 
+// Live AI-news feed + a lightweight stock watchlist for the News & markets screen.
+// The bundled deploy/news.json seeds content immediately; the live NEWS_URL feed
+// overrides it the same way UPDATES_URL overrides theme.updates. Tickers come from
+// the free Yahoo Finance chart endpoint (no key), each fetch independently guarded.
+function loadNews() {
+  for (const p of [path.resolve(process.cwd(), "deploy", "news.json"), path.resolve(process.cwd(), "news.json")]) {
+    try { if (fs.existsSync(p)) { const j = JSON.parse(fs.readFileSync(p, "utf8")); if (Array.isArray(j)) return j; } } catch {}
+  }
+  return Array.isArray(THEME.news) ? THEME.news : [];
+}
+let NEWS = loadNews();                                   // [{date,title,source?}]
+const NEWS_URL = THEME.newsUrl || "https://raw.githubusercontent.com/sriptcollector/orion-ai/main/deploy/news.json";
+const TICKERS = Array.isArray(THEME.tickers) && THEME.tickers.length ? THEME.tickers : ["AAPL", "NVDA", "MSFT", "MNKD"];
+async function fetchNews() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    const r = await fetch(NEWS_URL, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return;
+    const remote = await r.json();
+    const list = Array.isArray(remote) ? remote : (Array.isArray(remote?.news) ? remote.news : []);
+    if (list.length) {
+      const seen = new Set();
+      NEWS = [...list, ...NEWS]
+        .filter((n) => n && n.title && !seen.has(n.date + n.title) && seen.add(n.date + n.title))
+        .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    }
+  } catch {}
+}
+// One symbol, its own timeout + try/catch so a single failure never breaks the row.
+async function fetchQuote(symbol) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return { symbol, ok: false };
+    const j = await r.json();
+    const meta = j && j.chart && j.chart.result && j.chart.result[0] && j.chart.result[0].meta;
+    if (!meta || typeof meta.regularMarketPrice !== "number") return { symbol, ok: false };
+    const price = meta.regularMarketPrice;
+    const prev = typeof meta.chartPreviousClose === "number" ? meta.chartPreviousClose : meta.previousClose;
+    const pct = (typeof prev === "number" && prev) ? ((price - prev) / prev) * 100 : null;
+    return { symbol, ok: true, price, pct };
+  } catch { return { symbol, ok: false }; }
+}
+
 // Custom accent color per client (hex -> ANSI truecolor). Falls back to cyan.
 function parseHex(hex) {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
@@ -303,6 +351,86 @@ async function bookScreen() {
   else if (c === "2") { openExternal(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Booking a session")}`); console.log(`\n  ${C.gray}Opening your email…${C.reset}`); await pause(); }
 }
 
+// News & markets: a live AI-headline feed + a small stock watchlist. Both use the
+// same fetch-with-timeout + graceful-fallback pattern as fetchRemoteUpdates, and
+// the quotes run in parallel so the screen never feels slow.
+async function newsScreen() {
+  clear(); banner();
+  header("News & markets", "AI headlines + your watchlist");
+  const stop = startSpinner("fetching the latest…");
+  await fetchNews();
+  const quotes = await Promise.all(TICKERS.map(fetchQuote));
+  stop();
+
+  // AI NEWS panel — latest ~5, with a clean empty state when the feed is offline.
+  const newsLines = NEWS.length
+    ? NEWS.slice(0, 5).map((n) => `${ACCENT_SOFT}${n.date || ""}${C.reset}  ${C.white}${n.title || ""}${C.reset}${n.source ? "  " + C.gray + n.source + C.reset : ""}`)
+    : [`${C.gray}News is offline right now — check back in a bit.${C.reset}`];
+  printPanel(newsLines, { title: "AI news" });
+  console.log("");
+
+  // STOCKS panel — one right-aligned row per symbol, green up / red down, and a
+  // dim "—" for any ticker that failed so one bad fetch never breaks the panel.
+  const inner = W - 6;                            // usable content width inside the box
+  const stockLines = quotes.map((q) => {
+    const symTag = `${ACCENT}${C.bold}${q.symbol}${C.reset}`;
+    let right;
+    if (!q.ok) right = `${C.gray}—${C.reset}`;
+    else {
+      const price = `${C.white}$${q.price.toFixed(2)}${C.reset}`;
+      let move;
+      if (q.pct == null) move = `${C.gray}—${C.reset}`;
+      else {
+        const up = q.pct >= 0;
+        move = `${up ? C.green : C.red}${up ? "▲" : "▼"} ${up ? "+" : "−"}${Math.abs(q.pct).toFixed(2)}%${C.reset}`;
+      }
+      right = `${price}   ${padV(move, 10)}`;
+    }
+    const gap = inner - visLen(symTag) - visLen(right);
+    return symTag + " ".repeat(Math.max(1, gap)) + right;
+  });
+  printPanel(stockLines, { title: "Stocks" });
+  footer("enter back");
+  await pause();
+}
+
+// Crypto trading is a locked, premium add-on — this screen sells it and routes the
+// client to Orion to unlock it. It intentionally implements no trading itself.
+async function cryptoScreen() {
+  clear(); banner();
+  header("Crypto trading", `${C.yellow}🔒 Premium add-on${C.reset}`);
+  printPanel([
+    `${C.white}${C.bold}Automated crypto trading${C.reset}`,
+    ``,
+    `${C.gray}A hands-off engine that watches the market around the clock${C.reset}`,
+    `${C.gray}and trades a strategy Orion tunes to your risk appetite —${C.reset}`,
+    `${C.gray}dollar-cost averaging, momentum entries, and stop-loss${C.reset}`,
+    `${C.gray}protection, all running quietly in the background.${C.reset}`,
+    ``,
+    `${ACCENT}•${C.reset} ${C.white}24/7 automated execution${C.reset}`,
+    `${ACCENT}•${C.reset} ${C.white}Risk limits + stop-loss you set${C.reset}`,
+    `${ACCENT}•${C.reset} ${C.white}Weekly performance reports to your phone${C.reset}`,
+    ``,
+    `${C.yellow}🔒 Premium — Orion installs and configures this for you.${C.reset}`,
+  ], { title: "Crypto trading — Premium", color: rgbAnsi([201, 162, 39]) });
+  console.log("");
+  console.log(`  ${ACCENT}1${C.reset}  Email to unlock   ${C.white}${SUPPORT_EMAIL}${C.reset}`);
+  console.log(`  ${ACCENT}2${C.reset}  Call to unlock    ${C.white}${SUPPORT_PHONE}${C.reset}`);
+  footer("1–2 unlock · b back");
+  const c = (await prompt()).toLowerCase();
+  if (c === "1") {
+    console.log(`\n  ${C.gray}Opening your email to ${SUPPORT_EMAIL}…${C.reset}`);
+    openExternal(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Unlock crypto trading")}`);
+    console.log(`  ${C.gray}If nothing opened, just email ${SUPPORT_EMAIL} directly.${C.reset}`);
+    await pause();
+  } else if (c === "2") {
+    console.log(`\n  ${C.gray}Opening your dialer…${C.reset}`);
+    openExternal(`tel:${SUPPORT_PHONE.replace(/[^0-9+]/g, "")}`);
+    console.log(`  ${C.gray}Or call ${SUPPORT_PHONE} directly.${C.reset}`);
+    await pause();
+  }
+}
+
 // Where the terminal keeps the client's one-time consent to let the agent act.
 const AGENT_CONSENT_FILE = path.resolve(process.cwd(), ".agent-consent");
 const claudeBin = () => (process.platform === "win32" ? "claude.cmd" : "claude");
@@ -387,7 +515,9 @@ async function mainMenu() {
     item("5", "r", "Start services");
     item("6", "b", `${C.magenta}Book a session${C.reset}`);
     item("7", "c", `${C.magenta}Contact Orion${C.reset}`);
-    footer("0–7 or shortcut letter · q save & quit");
+    item("8", "n", "News & markets", `${C.gray}AI news + stocks${C.reset}`);
+    item("9", "p", `${C.magenta}Crypto trading${C.reset}`, `${C.yellow}🔒 Premium${C.reset}`);
+    footer("0–9 or shortcut letter · q save & quit");
     const c = (await prompt()).toLowerCase();
     if (c === "0" || c === "a") await agentScreen();
     else if (c === "1" || c === "t") await telegramSetup();
@@ -397,6 +527,8 @@ async function mainMenu() {
     else if (c === "5" || c === "r") await startScreen();
     else if (c === "6") await bookScreen();
     else if (c === "7" || c === "c") await helpScreen();
+    else if (c === "8" || c === "n") await newsScreen();
+    else if (c === "9" || c === "p") await cryptoScreen();
     else if (c === "q") { clear(); console.log("\n  " + C.green + "✓ Saved to " + ENV_PATH + ". You're all set." + C.reset + "\n"); return; }
   }
 }
