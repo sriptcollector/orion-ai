@@ -282,6 +282,72 @@ async function bookScreen() {
   else if (c === "2") { openExternal(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Booking a session")}`); console.log(`\n  ${C.gray}Opening your email…${C.reset}`); await pause(); }
 }
 
+// Where the terminal keeps the client's one-time consent to let the agent act.
+const AGENT_CONSENT_FILE = path.resolve(process.cwd(), ".agent-consent");
+const claudeBin = () => (process.platform === "win32" ? "claude.cmd" : "claude");
+
+// Run one Claude Code turn headlessly and return its text result. The agent has
+// the FULL capabilities of Claude Code (read/write files, run commands, tools)
+// scoped to this folder. That power is gated behind a one-time consent below.
+function runClaude(taskText) {
+  return new Promise((resolve) => {
+    let buf = "", err = "";
+    let child;
+    try {
+      child = spawn(claudeBin(), ["-p", taskText, "--output-format", "json", "--dangerously-skip-permissions"],
+        { cwd: process.cwd(), shell: process.platform === "win32", windowsHide: true });
+    } catch (e) { return resolve({ ok: false, why: "could not launch Claude Code: " + e.message }); }
+    child.on("error", (e) => resolve({ ok: false, why: e.code === "ENOENT" ? "missing" : e.message }));
+    child.stdout.on("data", (d) => (buf += d));
+    child.stderr.on("data", (d) => (err += d));
+    child.on("close", () => {
+      try { const j = JSON.parse(buf); resolve({ ok: true, result: j.result || "(no reply)" }); }
+      catch { resolve({ ok: false, why: (err || buf || "no output").slice(0, 200) }); }
+    });
+  });
+}
+
+// The flagship: a full Claude Code agent inside the branded terminal.
+async function agentScreen() {
+  clear(); banner();
+  header("Ask the agent");
+  console.log(`  ${C.gray}Your AI agent, with the full power of Claude Code — it can read and${C.reset}`);
+  console.log(`  ${C.gray}write files, run commands, and do real work in this folder.${C.reset}\n`);
+
+  const env = readEnv();
+  if (!env.ANTHROPIC_API_KEY) {
+    console.log(`  ${C.yellow}Add your Anthropic (Claude) API key first — menu ▸ API keys.${C.reset}`);
+    return void (await pause());
+  }
+  // One-time, informed consent before the agent can touch the machine.
+  if (!fs.existsSync(AGENT_CONSENT_FILE)) {
+    console.log(`  ${C.white}This agent can read/write files and run commands in:${C.reset}`);
+    console.log(`  ${C.gray}${process.cwd()}${C.reset}\n`);
+    const ok = (await prompt("  Allow it to act here? (y/N) ")).toLowerCase();
+    if (ok !== "y") { console.log(`\n  ${C.gray}No problem — nothing enabled.${C.reset}`); return void (await pause()); }
+    try { fs.writeFileSync(AGENT_CONSENT_FILE, new Date().toISOString()); } catch {}
+  }
+  process.env.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY; // hand the key to the child
+
+  for (;;) {
+    const task = await prompt("\n  What should it do? (blank to go back) ");
+    if (!task.trim()) return;
+    process.stdout.write(`\n  ${ACCENT}● ${C.reset}${C.gray}working…${C.reset}`);
+    const r = await runClaude(task);
+    process.stdout.write("\r\x1b[2K");
+    if (r.ok) {
+      console.log(`  ${ACCENT}${B.v}${C.reset} ${C.white}Agent${C.reset}\n`);
+      for (const ln of String(r.result).split(/\n/)) console.log("  " + ln);
+    } else if (r.why === "missing") {
+      console.log(`  ${C.yellow}Claude Code isn't installed on this machine.${C.reset}`);
+      console.log(`  ${C.gray}Install it once:  npm install -g @anthropic-ai/claude-code${C.reset}`);
+      return void (await pause());
+    } else {
+      console.log(`  ${C.red}That didn't run: ${r.why}${C.reset}`);
+    }
+  }
+}
+
 async function mainMenu() {
   for (;;) {
     const env = readEnv();
@@ -292,6 +358,7 @@ async function mainMenu() {
     const item = (n, letter, label, note = "") =>
       console.log(`  ${ACCENT}${n}${C.reset} ${C.gray}${letter}${C.reset}  ${padV(label, 22)} ${note}`);
     header("Menu");
+    item("0", "a", `${ACCENT}Ask the agent${C.reset}`, `${C.gray}powered by Claude Code${C.reset}`);
     item("1", "t", "Telegram messaging", tgOk ? C.green + "✓ configured" + C.reset : C.yellow + "not set" + C.reset);
     item("2", "k", "API keys", `${C.gray}${keyCount}/${KEYS.length} set${C.reset}`);
     item("3", "s", "Status");
@@ -299,9 +366,10 @@ async function mainMenu() {
     item("5", "r", "Start services");
     item("6", "b", `${C.magenta}Book a session${C.reset}`);
     item("7", "c", `${C.magenta}Contact Orion${C.reset}`);
-    footer("1–7 or shortcut letter · q save & quit");
+    footer("0–7 or shortcut letter · q save & quit");
     const c = (await prompt()).toLowerCase();
-    if (c === "1" || c === "t") await telegramSetup();
+    if (c === "0" || c === "a") await agentScreen();
+    else if (c === "1" || c === "t") await telegramSetup();
     else if (c === "2" || c === "k") await keysSetup();
     else if (c === "3" || c === "s") await statusScreen();
     else if (c === "4" || c === "d") await testScreen();
