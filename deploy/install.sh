@@ -13,12 +13,16 @@ DIR="${ORION_DEPLOY_DIR:-$HOME/orion-ai}"
 echo "== Orion AI installer =="
 
 # License gate: no key, no install. Only key HASHES ship here; Orion issues keys.
-ALLOWED_HASHES="abd0fb08d15c821c012a6c6f0ed5385ad0adbc2c953527893b782ec1fe880ce1"
+# Regenerate this space/newline list any time with:  node deploy/license-tool.mjs hashes
+# The first entry is the always-valid master key; per-client hashes follow.
+ALLOWED_HASHES="
+abd0fb08d15c821c012a6c6f0ed5385ad0adbc2c953527893b782ec1fe880ce1
+"
 KEY="${ORION_KEY:-}"
 if [ -z "$KEY" ]; then printf "Enter your Orion license key: "; read -r KEY </dev/tty; fi
 if command -v sha256sum >/dev/null 2>&1; then H=$(printf '%s' "$KEY" | sha256sum | cut -d' ' -f1)
 else H=$(printf '%s' "$KEY" | shasum -a 256 | cut -d' ' -f1); fi
-case " $ALLOWED_HASHES " in *" $H "*) echo "License OK";; *) echo "Invalid or missing license key. Contact Orion (${ORION_SUPPORT_EMAIL:-orionjones99@gmail.com}) to get one."; exit 1;; esac
+case " $(echo $ALLOWED_HASHES) " in *" $H "*) echo "License OK";; *) echo "Invalid or missing license key. Contact Orion (${ORION_SUPPORT_EMAIL:-orionjones99@gmail.com}) to get one."; exit 1;; esac
 
 [ -n "$REPO" ] || { echo "ERROR: pass the client repo URL as the first arg (or set ORION_DEPLOY_REPO)."; exit 1; }
 for t in git node; do command -v "$t" >/dev/null 2>&1 || { echo "ERROR: $t is required. Install it, then re-run."; exit 1; }; done

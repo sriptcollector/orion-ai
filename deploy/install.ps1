@@ -15,7 +15,11 @@ Write-Host "== Orion AI installer ==" -ForegroundColor Cyan
 
 # License gate: no key, no install. The public installer only carries HASHES of
 # valid keys, so the key list can't be read out of it. Orion issues the keys.
-$AllowedKeyHashes = @("abd0fb08d15c821c012a6c6f0ed5385ad0adbc2c953527893b782ec1fe880ce1")
+# Regenerate this list any time with:  node deploy/license-tool.mjs hashes
+# The first entry is the always-valid master key; per-client hashes follow.
+$AllowedKeyHashes = @(
+  "abd0fb08d15c821c012a6c6f0ed5385ad0adbc2c953527893b782ec1fe880ce1"
+)
 $Key = $env:ORION_KEY
 if (-not $Key) { $Key = Read-Host "Enter your Orion license key" }
 $sha = [System.Security.Cryptography.SHA256]::Create()
