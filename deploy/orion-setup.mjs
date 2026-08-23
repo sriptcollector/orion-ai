@@ -11,9 +11,11 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
+import os from "node:os";
+import crypto from "node:crypto";
 
 const C = {
-  reset: "\x1b[0m", dim: "\x1b[2m", bold: "\x1b[1m",
+  reset: "\x1b[0m", dim: "\x1b[2m", bold: "\x1b[1m", italic: "\x1b[3m",
   cyan: "\x1b[36m", green: "\x1b[32m", yellow: "\x1b[33m", red: "\x1b[31m",
   gray: "\x1b[90m", white: "\x1b[97m", magenta: "\x1b[35m",
 };
@@ -24,6 +26,7 @@ const ENV_PATH = process.env.ORION_ENV_PATH || path.resolve(process.cwd(), ".env
 //   { "subtitle":"ACME AI", "watermark":"~ built for ACME by Orion ~",
 //     "supportEmail":"help@orion-jones.com", "supportPhone":"424-422-5031",
 //     "startCommand":"npm start",
+//     "updates":[{ "date":"2026-08-22","text":"Nightly backups are now live." }],
 //     "keys":[{ "key":"RESEND_API_KEY","label":"Resend","hint":"resend.com","secret":true }] }
 function loadTheme() {
   for (const p of [process.env.ORION_THEME_PATH, path.resolve(process.cwd(), "deploy", "orion-theme.json"), path.resolve(process.cwd(), "orion-theme.json")]) {
@@ -41,23 +44,30 @@ const CLIENT_NAME = THEME.clientName || "";
 const BOOK_URL = THEME.bookUrl || "https://book.orion-jones.com";
 const PROJECTS = Array.isArray(THEME.projects) ? THEME.projects : [];   // [{name,status}]
 const ROUTINES = Array.isArray(THEME.routines) ? THEME.routines : [];   // [{name,schedule}]
+const UPDATES = Array.isArray(THEME.updates) ? THEME.updates : [];      // [{date,text}]
 
 // Custom accent color per client (hex -> ANSI truecolor). Falls back to cyan.
-function hexAnsi(hex, fg = true) {
+function parseHex(hex) {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
-  if (!m) return fg ? C.cyan : C.magenta;
-  const [r, g, b] = [1, 2, 3].map((i) => parseInt(m[i], 16));
+  if (!m) return null;
+  return [1, 2, 3].map((i) => parseInt(m[i], 16));
+}
+function rgbAnsi(rgb, fg = true) {
+  if (!rgb) return fg ? C.cyan : C.magenta;
+  const [r, g, b] = rgb;
   return `\x1b[${fg ? 38 : 48};2;${r};${g};${b}m`;
 }
-const ACCENT = hexAnsi(THEME.accent);
+const ACCENT_RGB = parseHex(THEME.accent);
+const ACCENT = rgbAnsi(ACCENT_RGB);
+// A refined color system derived from the accent: a softened tint for borders and
+// rules so panels feel cohesive rather than shouting the accent everywhere.
+const ACCENT_SOFT = ACCENT_RGB ? rgbAnsi(ACCENT_RGB.map((c) => Math.round(c * 0.55 + 12))) : C.gray;
 
 // Licensing / anti-sharing. A client bundle carries an expected key (THEME.license)
 // and, once activated, binds to THIS machine (a hash of the hostname). Copying the
 // folder to another computer fails the machine check and must be re-activated with
 // the key, which only the issuer (Orion) hands out. Real online validation against
 // THEME.licenseServer is the phase-2 hardening; this stops casual folder-sharing.
-import os from "node:os";
-import crypto from "node:crypto";
 const LICENSE_FILE = path.resolve(process.cwd(), ".license");
 const machineId = () => crypto.createHash("sha256").update(os.hostname() + "|" + (os.userInfo().username || "")).digest("hex").slice(0, 16);
 
@@ -102,9 +112,67 @@ function setEnv(key, value) {
 }
 
 // ---- UI helpers --------------------------------------------------------------
-const W = 60;
+const W = 62;                                   // frame width (outer)
 const clear = () => process.stdout.write("\x1b[2J\x1b[H");
 const mask = (v) => (v ? "•".repeat(Math.min(8, v.length)) + (v.length > 8 ? "…" : "") : "");
+// Visible length + padding that ignore ANSI escape sequences, so boxes align.
+const stripAnsi = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, "");
+const visLen = (s) => [...stripAnsi(s)].length;
+function padV(s, n) { const pad = n - visLen(s); return pad > 0 ? s + " ".repeat(pad) : s; }
+function truncV(s, n) {
+  if (visLen(s) <= n) return s;
+  // Trim visible chars while preserving trailing reset.
+  let out = "", count = 0, i = 0, raw = String(s);
+  while (i < raw.length && count < n - 1) {
+    if (raw[i] === "\x1b") { const m = /^\x1b\[[0-9;]*m/.exec(raw.slice(i)); if (m) { out += m[0]; i += m[0].length; continue; } }
+    out += raw[i]; count++; i++;
+  }
+  return out + "…";
+}
+
+const B = { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│" };
+// Draw a titled, rounded panel. `lines` are pre-colored content strings.
+function panel(lines, { title = "", color = ACCENT_SOFT, width = W } = {}) {
+  const inner = width - 2;                       // chars between the vertical bars
+  const out = [];
+  let top;
+  if (title) {
+    const seg = `${B.h} ${C.reset}${C.bold}${C.white}${title}${C.reset}${color} `;
+    const used = visLen(`${B.h} ${title} `);
+    top = color + B.tl + seg + B.h.repeat(Math.max(0, inner - used)) + B.tr + C.reset;
+  } else {
+    top = color + B.tl + B.h.repeat(inner) + B.tr + C.reset;
+  }
+  out.push(top);
+  for (const ln of lines) {
+    const body = truncV(ln, inner - 2);
+    out.push(`${color}${B.v}${C.reset} ${padV(body, inner - 2)} ${color}${B.v}${C.reset}`);
+  }
+  out.push(color + B.bl + B.h.repeat(inner) + B.br + C.reset);
+  return out;
+}
+const printPanel = (lines, opts) => process.stdout.write(panel(lines, opts).join("\n") + "\n");
+
+// A tasteful spinner for network work. Returns a stop() that clears the line.
+function startSpinner(label) {
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  let i = 0;
+  process.stdout.write("\x1b[?25l");
+  const t = setInterval(() => {
+    process.stdout.write(`\r  ${ACCENT}${frames[i++ % frames.length]}${C.reset} ${C.gray}${label}${C.reset}   `);
+  }, 80);
+  return () => { clearInterval(t); process.stdout.write("\r\x1b[K\x1b[?25h"); };
+}
+
+function nowStamp() {
+  const d = new Date();
+  try {
+    const day = d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return `${day} · ${time}`;
+  } catch { return d.toString().slice(0, 21); }
+}
+
 function banner() {
   const art = [
     "  ___  ____  ___ ___  _  _ ",
@@ -112,16 +180,26 @@ function banner() {
     "| (_) | |_) || | (_) | .` |",
     " \\___/|_| \\_\\___\\___/|_|\\_|",
   ];
-  process.stdout.write(ACCENT + C.bold + art.join("\n") + C.reset + "\n");
-  process.stdout.write(C.gray + "    " + SUBTITLE + C.reset + "\n");
-  if (CLIENT_NAME) process.stdout.write(ACCENT + C.bold + "  Welcome, " + CLIENT_NAME + C.reset + "\n");
-  // Watermark line, faint, on every screen.
-  process.stdout.write(C.dim + C.magenta + ("  " + WATERMARK).padEnd(W) + C.reset + "\n");
-  process.stdout.write(ACCENT + "─".repeat(W) + C.reset + "\n");
+  process.stdout.write("\n" + ACCENT + C.bold + art.join("\n") + C.reset + "\n");
+  process.stdout.write("    " + ACCENT_SOFT + SUBTITLE + C.reset + "\n");
+  if (CLIENT_NAME) process.stdout.write("    " + C.white + C.bold + "Welcome, " + CLIENT_NAME + C.reset + "\n");
+  process.stdout.write("    " + C.dim + C.magenta + WATERMARK + C.reset + "\n\n");
+}
+
+// Section header used inside screens (not a full box) for lightweight hierarchy.
+function header(title, sub = "") {
+  process.stdout.write(`  ${ACCENT}${C.bold}${title}${C.reset}${sub ? "   " + C.gray + sub + C.reset : ""}\n\n`);
+}
+// Persistent footer hint bar — keeps navigation always in view.
+function footer(hint) {
+  process.stdout.write("\n  " + ACCENT_SOFT + B.h.repeat(W - 2) + C.reset + "\n");
+  process.stdout.write("  " + C.gray + hint + C.reset + "\n");
 }
 
 function rl() { return readline.createInterface({ input: process.stdin, output: process.stdout }); }
 const ask = (q) => new Promise((res) => { const i = rl(); i.question(q, (a) => { i.close(); res(a.trim()); }); });
+const prompt = (label = "choose") => ask(`  ${ACCENT}▸${C.reset} ${C.gray}${label}${C.reset} `);
+const pause = () => ask(`  ${C.gray}press enter to go back${C.reset}`);
 
 // ---- Screens -----------------------------------------------------------------
 // Gate the app on a valid, machine-bound license before anything else.
@@ -131,7 +209,7 @@ async function licenseGate() {
   try { lic = JSON.parse(fs.readFileSync(LICENSE_FILE, "utf8")); } catch {}
   if (lic && lic.key === THEME.license && lic.machine === machineId()) return true;
   clear(); banner();
-  console.log(`${C.white}${C.bold}  Activate this software${C.reset}\n`);
+  header("Activate this software");
   if (lic && lic.machine !== machineId()) console.log(`  ${C.yellow}This copy was activated on another computer. Re-enter your key to move it here.${C.reset}\n`);
   console.log(`  ${C.gray}Enter the license key Orion gave you. It locks to this machine,${C.reset}`);
   console.log(`  ${C.gray}so the software can't be shared by copying the folder.${C.reset}\n`);
@@ -139,95 +217,132 @@ async function licenseGate() {
     const key = await ask(`  License key: `);
     if (key === THEME.license) {
       fs.writeFileSync(LICENSE_FILE, JSON.stringify({ key, machine: machineId(), activatedAt: new Date().toISOString() }, null, 2));
-      console.log(C.green + "\n  Activated on this machine. Thanks!" + C.reset);
-      await ask(C.gray + "  enter to continue" + C.reset);
+      console.log(C.green + "\n  ✓ Activated on this machine. Thanks!" + C.reset);
+      await ask(`  ${C.gray}press enter to continue${C.reset}`);
       return true;
     }
-    console.log(C.red + "  That key doesn't match. " + (2 - tries) + " tries left." + C.reset);
+    console.log(C.red + "  ✗ That key doesn't match. " + (2 - tries) + " tries left." + C.reset);
   }
   console.log(C.red + "\n  Could not activate. Contact Orion: " + SUPPORT_EMAIL + C.reset);
   return false;
 }
 
-function dashboard() {
+// Colored status dot for a project row.
+function projectDot(status) {
+  if (/live|done|active|green/i.test(status || "")) return C.green + "●" + C.reset;
+  if (/build|progress|wip/i.test(status || "")) return C.yellow + "●" + C.reset;
+  return C.gray + "○" + C.reset;
+}
+
+function dashboard(env) {
   clear(); banner();
-  console.log(`${C.white}${C.bold}  Dashboard${C.reset}\n`);
-  console.log(`  ${C.gray}Your projects${C.reset}`);
-  if (PROJECTS.length) for (const p of PROJECTS) {
-    const s = /live|done|active|green/i.test(p.status || "") ? C.green + "●" : /build|progress|wip/i.test(p.status || "") ? C.yellow + "●" : C.gray + "○";
-    console.log(`   ${s} ${C.reset}${p.name}  ${C.gray}${p.status || ""}${C.reset}`);
-  } else console.log(`   ${C.gray}(none yet — Orion will add these)${C.reset}`);
-  console.log(`\n  ${C.gray}Routines${C.reset}`);
-  if (ROUTINES.length) for (const r of ROUTINES) console.log(`   ${ACCENT}•${C.reset} ${r.name}  ${C.gray}${r.schedule || ""}${C.reset}`);
-  else console.log(`   ${C.gray}(none yet)${C.reset}`);
+
+  const tgOk = env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_ALLOWED_USER_IDS;
+  const keyCount = KEYS.filter((k) => env[k.key]).length;
+  const liveCount = PROJECTS.filter((p) => /live|done|active|green/i.test(p.status || "")).length;
+  const svc = PROJECTS.length ? `${liveCount}/${PROJECTS.length} live` : (tgOk ? "messaging ready" : "not configured");
+  const dot = (tgOk && keyCount) ? C.green + "●" : keyCount ? C.yellow + "●" : C.red + "●";
+
+  // Header panel: live clock + a one-line system summary.
+  printPanel([
+    `${C.white}${nowStamp()}${C.reset}`,
+    `${dot}${C.reset}  ${C.gray}services${C.reset} ${svc}   ${C.gray}·${C.reset}   ${C.gray}keys${C.reset} ${keyCount}/${KEYS.length}   ${C.gray}·${C.reset}   ${C.gray}telegram${C.reset} ${tgOk ? C.green + "on" + C.reset : C.yellow + "off" + C.reset}`,
+  ], { title: `Dashboard${CLIENT_NAME ? " — " + CLIENT_NAME : ""}` });
+  console.log("");
+
+  // Projects panel.
+  const projLines = PROJECTS.length
+    ? PROJECTS.map((p) => `${projectDot(p.status)} ${padV(C.white + p.name + C.reset, 22)} ${C.gray}${p.status || ""}${C.reset}`)
+    : [`${C.gray}No projects yet — Orion will add these for you.${C.reset}`];
+  printPanel(projLines, { title: "Projects" });
+  console.log("");
+
+  // Routines panel.
+  const routineLines = ROUTINES.length
+    ? ROUTINES.map((r) => `${ACCENT}•${C.reset} ${padV(C.white + r.name + C.reset, 22)} ${C.gray}${r.schedule || ""}${C.reset}`)
+    : [`${C.gray}No routines scheduled yet.${C.reset}`];
+  printPanel(routineLines, { title: "Routines" });
+
+  // What's new — only when the theme provides updates.
+  if (UPDATES.length) {
+    console.log("");
+    const updLines = UPDATES.slice(0, 4).map((u) => `${ACCENT_SOFT}${u.date || ""}${C.reset}  ${C.white}${u.text || ""}${C.reset}`);
+    printPanel(updLines, { title: "What's new" });
+  }
 }
 
 async function bookScreen() {
   clear(); banner();
-  console.log(`${C.white}${C.bold}  Book a session with Orion${C.reset}\n`);
-  console.log(`  ${C.cyan}1${C.reset}) Open the booking page  ${C.gray}${BOOK_URL}${C.reset}`);
-  console.log(`  ${C.cyan}2${C.reset}) Email to schedule      ${C.gray}${SUPPORT_EMAIL}${C.reset}`);
-  console.log(`  ${C.cyan}b${C.reset}) Back\n`);
-  const c = (await ask(`${C.gray}choose ▸ ${C.reset}`)).toLowerCase();
-  if (c === "1") { openExternal(BOOK_URL); console.log(`\n  ${C.gray}Opening ${BOOK_URL}…${C.reset}`); await ask(C.gray + "  enter" + C.reset); }
-  else if (c === "2") { openExternal(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Booking a session")}`); await ask(C.gray + "  enter" + C.reset); }
+  header("Book a session with Orion");
+  console.log(`  ${ACCENT}1${C.reset}  Open the booking page   ${C.gray}${BOOK_URL}${C.reset}`);
+  console.log(`  ${ACCENT}2${C.reset}  Email to schedule       ${C.gray}${SUPPORT_EMAIL}${C.reset}`);
+  footer("1–2 choose · b back");
+  const c = (await prompt()).toLowerCase();
+  if (c === "1") { openExternal(BOOK_URL); console.log(`\n  ${C.gray}Opening ${BOOK_URL}…${C.reset}`); await pause(); }
+  else if (c === "2") { openExternal(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Booking a session")}`); console.log(`\n  ${C.gray}Opening your email…${C.reset}`); await pause(); }
 }
 
 async function mainMenu() {
   for (;;) {
-    dashboard();
     const env = readEnv();
+    dashboard(env);
     const tgOk = env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_ALLOWED_USER_IDS;
     const keyCount = KEYS.filter((k) => env[k.key]).length;
-    console.log(`\n${ACCENT}${C.bold}  Menu${C.reset}\n`);
-    console.log(`  ${ACCENT}1${C.reset}) Telegram messaging   ${tgOk ? C.green + "✓ configured" : C.yellow + "not set"}${C.reset}`);
-    console.log(`  ${ACCENT}2${C.reset}) API keys             ${C.gray}${keyCount}/${KEYS.length} set${C.reset}`);
-    console.log(`  ${ACCENT}3${C.reset}) Status`);
-    console.log(`  ${ACCENT}4${C.reset}) Test my setup`);
-    console.log(`  ${ACCENT}5${C.reset}) Start services`);
-    console.log(`  ${ACCENT}6${C.reset}) ${C.magenta}Book a session${C.reset}`);
-    console.log(`  ${ACCENT}7${C.reset}) ${C.magenta}Contact Orion${C.reset}`);
-    console.log(`  ${ACCENT}q${C.reset}) Save & quit\n`);
-    const c = (await ask(`${C.gray}choose ▸ ${C.reset}`)).toLowerCase();
-    if (c === "1") await telegramSetup();
-    else if (c === "2") await keysSetup();
-    else if (c === "3") await statusScreen();
-    else if (c === "4") await testScreen();
-    else if (c === "5") await startScreen();
+    console.log("");
+    const item = (n, letter, label, note = "") =>
+      console.log(`  ${ACCENT}${n}${C.reset} ${C.gray}${letter}${C.reset}  ${padV(label, 22)} ${note}`);
+    header("Menu");
+    item("1", "t", "Telegram messaging", tgOk ? C.green + "✓ configured" + C.reset : C.yellow + "not set" + C.reset);
+    item("2", "k", "API keys", `${C.gray}${keyCount}/${KEYS.length} set${C.reset}`);
+    item("3", "s", "Status");
+    item("4", "d", "Test my setup");
+    item("5", "r", "Start services");
+    item("6", "b", `${C.magenta}Book a session${C.reset}`);
+    item("7", "c", `${C.magenta}Contact Orion${C.reset}`);
+    footer("1–7 or shortcut letter · q save & quit");
+    const c = (await prompt()).toLowerCase();
+    if (c === "1" || c === "t") await telegramSetup();
+    else if (c === "2" || c === "k") await keysSetup();
+    else if (c === "3" || c === "s") await statusScreen();
+    else if (c === "4" || c === "d") await testScreen();
+    else if (c === "5" || c === "r") await startScreen();
     else if (c === "6") await bookScreen();
-    else if (c === "7") await helpScreen();
-    else if (c === "q" || c === "") { clear(); console.log(C.green + "Saved to " + ENV_PATH + ". You're set." + C.reset); return; }
+    else if (c === "7" || c === "c") await helpScreen();
+    else if (c === "q") { clear(); console.log("\n  " + C.green + "✓ Saved to " + ENV_PATH + ". You're all set." + C.reset + "\n"); return; }
   }
 }
 
 async function telegramSetup() {
   clear(); banner();
-  console.log(`${C.white}${C.bold}  Telegram messaging (like Hermes)${C.reset}\n`);
-  console.log(`  ${C.gray}1. Open @BotFather, /newbot, copy the token.${C.reset}`);
+  header("Telegram messaging", "message your assistant like a text");
+  console.log(`  ${C.gray}1. Open @BotFather, send /newbot, copy the token.${C.reset}`);
   console.log(`  ${C.gray}2. Open @userinfobot to get your numeric user id.${C.reset}\n`);
   const tok = await ask(`  Bot token ${C.gray}(enter to skip)${C.reset}: `);
   if (tok) setEnv("TELEGRAM_BOT_TOKEN", tok);
   const uid = await ask(`  Your Telegram user id: `);
   if (uid) setEnv("TELEGRAM_ALLOWED_USER_IDS", uid);
-  console.log(C.green + "\n  Saved. " + C.reset);
-  await ask(C.gray + "  enter to go back" + C.reset);
+  console.log(C.green + "\n  ✓ Saved." + C.reset);
+  await pause();
 }
 
 async function keysSetup() {
   for (;;) {
     clear(); banner();
     const env = readEnv();
-    console.log(`${C.white}${C.bold}  API keys${C.reset}  ${C.gray}(pick a number to set, b to go back)${C.reset}\n`);
+    header("API keys", "pick a number to set · b to go back");
     KEYS.forEach((k, i) => {
-      const cur = env[k.key] ? C.green + (k.secret ? mask(env[k.key]) : env[k.key]) : C.yellow + "— not set —";
-      console.log(`  ${C.cyan}${i + 1}${C.reset}) ${k.label.padEnd(26)} ${cur}${C.reset}  ${C.gray}${k.hint}${C.reset}`);
+      const cur = env[k.key]
+        ? C.green + "✓ " + (k.secret ? mask(env[k.key]) : env[k.key]) + C.reset
+        : C.yellow + "— not set —" + C.reset;
+      console.log(`  ${ACCENT}${i + 1}${C.reset}  ${padV(k.label, 26)} ${padV(cur, 20)} ${C.gray}${k.hint}${C.reset}`);
     });
-    const c = (await ask(`\n${C.gray}choose ▸ ${C.reset}`)).toLowerCase();
+    footer("number set · b back");
+    const c = (await prompt()).toLowerCase();
     if (c === "b" || c === "") return;
     const idx = Number(c) - 1;
     if (KEYS[idx]) {
-      const v = await ask(`  ${KEYS[idx].label} = `);
-      if (v) { setEnv(KEYS[idx].key, v); console.log(C.green + "  saved" + C.reset); await ask(C.gray + "  enter" + C.reset); }
+      const v = await ask(`\n  ${KEYS[idx].label} = `);
+      if (v) { setEnv(KEYS[idx].key, v); console.log(C.green + "  ✓ saved" + C.reset); await ask(`  ${C.gray}enter${C.reset}`); }
     }
   }
 }
@@ -235,37 +350,43 @@ async function keysSetup() {
 async function statusScreen() {
   clear(); banner();
   const env = readEnv();
-  console.log(`${C.white}${C.bold}  Status${C.reset}\n`);
-  const row = (label, ok) => console.log(`  ${ok ? C.green + "●" : C.red + "○"} ${C.reset}${label}`);
-  row("Telegram messaging", env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_ALLOWED_USER_IDS);
-  for (const k of KEYS) if (k.key.startsWith("TELEGRAM")) continue; else row(k.label, !!env[k.key]);
-  console.log(`\n  ${C.gray}config: ${ENV_PATH}${C.reset}`);
-  await ask(C.gray + "\n  enter to go back" + C.reset);
+  header("Status");
+  const rows = [];
+  const row = (label, ok, note = "") => rows.push(`${ok ? C.green + "●" : C.red + "○"}${C.reset}  ${padV(C.white + label + C.reset, 30)} ${C.gray}${note}${C.reset}`);
+  row("Telegram messaging", env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_ALLOWED_USER_IDS, (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_ALLOWED_USER_IDS) ? "ready" : "needs token + id");
+  for (const k of KEYS) { if (k.key.startsWith("TELEGRAM")) continue; row(k.label, !!env[k.key], env[k.key] ? "set" : "not set"); }
+  printPanel(rows, { title: "Configuration" });
+  console.log(`\n  ${C.gray}config file: ${ENV_PATH}${C.reset}`);
+  footer("enter back");
+  await pause();
 }
 
 async function testScreen() {
   clear(); banner();
-  console.log(`${C.white}${C.bold}  Test my setup${C.reset}\n`);
+  header("Test my setup", "runs a live check on your connections");
   const env = readEnv();
-  const line = (ok, label, note = "") => console.log(`  ${ok ? C.green + "✓" : C.red + "✗"} ${C.reset}${label}${note ? C.gray + "  " + note + C.reset : ""}`);
+  const line = (ok, label, note = "") => console.log(`  ${ok ? C.green + "✓" : C.red + "✗"} ${C.reset}${padV(label, 30)}${note ? C.gray + "  " + note + C.reset : ""}`);
 
   // Telegram: prove the token is real (getMe) and actually deliver a test message.
   if (env.TELEGRAM_BOT_TOKEN) {
-    process.stdout.write(`  ${C.gray}checking Telegram…${C.reset}\r`);
+    let stop = startSpinner("checking Telegram bot…");
     try {
       const me = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`).then((r) => r.json());
+      stop();
       if (me.ok) {
         line(true, `Telegram bot`, "@" + me.result.username);
         if (env.TELEGRAM_ALLOWED_USER_IDS) {
+          stop = startSpinner("sending a test message…");
           const chat = String(env.TELEGRAM_ALLOWED_USER_IDS).split(",")[0].trim();
           const sent = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
             method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify({ chat_id: chat, text: "✅ Orion AI setup test — messaging works." }),
           }).then((r) => r.json());
+          stop();
           line(sent.ok, `Test message to your Telegram`, sent.ok ? "check your phone" : (sent.description || "failed"));
         } else line(false, "Your Telegram user id", "not set");
       } else line(false, "Telegram bot token", me.description || "invalid");
-    } catch (e) { line(false, "Telegram", "no network: " + String(e.message).slice(0, 40)); }
+    } catch (e) { stop(); line(false, "Telegram", "no network: " + String(e.message).slice(0, 40)); }
   } else line(false, "Telegram bot token", "not set");
 
   // API keys: format sanity, not a live call (avoids surprise charges on a test).
@@ -275,34 +396,36 @@ async function testScreen() {
     const check = KEY_SHAPE[k.key] ? KEY_SHAPE[k.key](env[k.key]) : true;
     line(check === true, k.label, check === true ? "looks right" : check);
   }
-  await ask(C.gray + "\n  enter to go back" + C.reset);
+  footer("enter back");
+  await pause();
 }
 
 async function startScreen() {
   clear(); banner();
-  console.log(`${C.white}${C.bold}  Start services${C.reset}\n`);
-  console.log(`  Runs ${C.cyan}${START_COMMAND}${C.reset} in this folder.\n`);
+  header("Start services");
+  console.log(`  Runs ${ACCENT}${START_COMMAND}${C.reset} in this folder.\n`);
   const go = (await ask(`  Start now? ${C.gray}(y/N)${C.reset} `)).toLowerCase();
   if (go !== "y") return;
-  console.log(`\n  ${C.gray}launching…${C.reset}`);
+  const stop = startSpinner("launching…");
   try {
     const [cmd, ...rest] = START_COMMAND.split(" ");
     const bin = process.platform === "win32" ? cmd + ".cmd" : cmd;
     const child = spawn(bin, rest, { cwd: process.cwd(), detached: true, stdio: "ignore", shell: process.platform === "win32" });
     child.unref();
-    console.log(C.green + "  started in the background." + C.reset);
-  } catch (e) { console.log(C.red + "  could not start: " + e.message + C.reset); }
-  await ask(C.gray + "\n  enter to go back" + C.reset);
+    stop();
+    console.log(C.green + "  ✓ Started in the background." + C.reset);
+  } catch (e) { stop(); console.log(C.red + "  ✗ Could not start: " + e.message + C.reset); }
+  footer("enter back");
+  await pause();
 }
 
 async function helpScreen() {
   clear(); banner();
-  console.log(`${C.white}${C.bold}  Request help${C.reset}\n`);
-  console.log(`  Reach Orion directly:\n`);
-  console.log(`  ${C.cyan}1${C.reset}) Email  ${C.white}${SUPPORT_EMAIL}${C.reset}`);
-  console.log(`  ${C.cyan}2${C.reset}) Call   ${C.white}${SUPPORT_PHONE}${C.reset}`);
-  console.log(`  ${C.cyan}b${C.reset}) Back\n`);
-  const c = (await ask(`${C.gray}choose ▸ ${C.reset}`)).toLowerCase();
+  header("Contact Orion", "reach a real person, fast");
+  console.log(`  ${ACCENT}1${C.reset}  Email   ${C.white}${SUPPORT_EMAIL}${C.reset}`);
+  console.log(`  ${ACCENT}2${C.reset}  Call    ${C.white}${SUPPORT_PHONE}${C.reset}`);
+  footer("1–2 choose · b back");
+  const c = (await prompt()).toLowerCase();
   if (c === "1") {
     console.log(`\n  ${C.gray}Opening your email to ${SUPPORT_EMAIL}…${C.reset}`);
     openExternal(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Help with my Orion AI setup")}`);
@@ -312,7 +435,7 @@ async function helpScreen() {
     openExternal(`tel:${SUPPORT_PHONE.replace(/[^0-9+]/g, "")}`);
     console.log(`  ${C.gray}Or call ${SUPPORT_PHONE} directly.${C.reset}`);
   } else return;
-  await ask(C.gray + "\n  enter to go back" + C.reset);
+  await pause();
 }
 
 // Open a mailto:/tel: with the OS default handler, cross-platform, best-effort.
