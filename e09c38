@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Orion AI — one-line install for this client.
+#
+# This exists so nobody types a 500-character command at someone's desk.
+#
+# It deliberately carries NO API keys. A public URL is readable by anyone who
+# has it, and a leaked model key bills the owner while a leaked bot token lets
+# a stranger message them. What is here is a revocable per-client license and
+# some non-secret config; the two real secrets are entered once, afterwards,
+# in the dashboard this installs — which is reachable from a phone.
+set -euo pipefail
+
+export ORION_KEY=ORION-E8F6-952A-79AF-BED9-69
+export CLIENT_NAME='Mac Mini client'
+export ORION_TELEGRAM_CHAT_ID=7127214880
+export ORION_ADMIN_TELEGRAM_IDS=7127214880
+export ORION_SUPPORT_EMAIL=orionjones99@gmail.com
+export ORION_SUPPORT_PHONE=424-422-5031
+export STATUS_BIND=0.0.0.0
+export ORION_AUTO=1
+
+exec bash -c "$(curl -fsSL https://raw.githubusercontent.com/sriptcollector/orion-ai/main/deploy/mac/install-mac.sh)"
