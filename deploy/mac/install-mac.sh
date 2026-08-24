@@ -101,4 +101,6 @@ echo
 dim "Reopen this screen anytime:  cd $APP && npm run setup"
 echo
 sleep 2
-exec node tui.mjs
+# Piped through `curl | bash`, stdin is the pipe, not the keyboard - the TUI
+# would read EOF and quit instantly. Hand it the real terminal.
+exec node tui.mjs </dev/tty
