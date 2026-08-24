@@ -15,10 +15,10 @@
     "login:instagram": "node engines/socials.mjs login instagram",
     "install:service": "bash launchd/install-services.sh",
     "uninstall:service": "bash launchd/uninstall-services.sh",
-    "status": "node statusweb.mjs",
     "login:whatsapp": "node engines/whatsapp.mjs login",
     "services": "node -e \"import(String.raw`./lib/services.mjs`).then(async m=>console.log(m.renderText(await m.board())))\"",
-    "test": "node test.mjs"
+    "test": "node test.mjs",
+    "dashboard": "node dashboard.mjs"
   },
   "engines": {
     "node": ">=20"

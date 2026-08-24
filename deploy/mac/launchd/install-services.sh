@@ -51,12 +51,12 @@ PLIST
 echo "Installing launchd services from $DIR"
 make_plist "com.orion.assistant.bot" "bot.mjs"
 make_plist "com.orion.assistant.scheduler" "scheduler.mjs"
-make_plist "com.orion.assistant.status" "statusweb.mjs"
+make_plist "com.orion.assistant.status" "dashboard.mjs"
 
 echo
 echo "Done. Both services are running and will come back after a reboot."
 echo
-echo "  status page:  http://$(hostname):${STATUS_PORT:-8791}/   (token is in .env as STATUS_TOKEN)"
+echo "  dashboard:    open the URL printed by the installer (token is STATUS_TOKEN in .env)"
 echo "  status:   launchctl list | grep com.orion.assistant"
 echo "  logs:     tail -f $DIR/data/logs/bot.log"
 echo "  stop:     bash $DIR/launchd/uninstall-services.sh"

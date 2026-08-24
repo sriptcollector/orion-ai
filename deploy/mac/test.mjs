@@ -435,84 +435,175 @@ G("draft — writing layer (offline shape checks)");
 }
 
 // ===========================================================================
+G("cookies — signing in without signing in");
+{
+  const ck = await import("./lib/cookies.mjs");
+  const mk = (arr) => ck.parseCookies(JSON.stringify(arr)).cookies;
+  const future = Math.floor(Date.now() / 1000) + 30 * 86400;
+
+  // Every export format a client might paste, because they should not have to
+  // know which extension they used.
+  ok("Cookie-Editor JSON parses", ck.parseCookies(JSON.stringify([{ name: "li_at", value: "v", domain: ".linkedin.com" }])).ok);
+  ok("a {cookies:[...]} wrapper parses", ck.parseCookies(JSON.stringify({ cookies: [{ name: "li_at", value: "v", domain: ".linkedin.com" }] })).ok);
+  const TAB = String.fromCharCode(9), NL = String.fromCharCode(10);
+  const netscape = ["# Netscape HTTP Cookie File",
+    [".linkedin.com", "TRUE", "/", "TRUE", "1800000000", "li_at", "v"].join(TAB)].join(NL) + NL;
+  ok("Netscape cookies.txt parses", ck.parseCookies(netscape).ok);
+  ok("a raw Cookie header parses", ck.parseCookies("li_at=v; JSESSIONID=x").ok);
+  ok("empty input is rejected", !ck.parseCookies("").ok);
+  ok("prose is rejected", !ck.parseCookies("here are my cookies thanks").ok);
+  ok("broken JSON is rejected with a reason", !ck.parseCookies("[{name:").ok);
+
+  const norm = mk([{ name: "li_at", value: "v", domain: ".linkedin.com", sameSite: "no_restriction", expirationDate: 1800000000.9, secure: false }])[0];
+  eq("sameSite no_restriction maps to None", norm.sameSite, "None");
+  ok("SameSite=None forces secure", norm.secure === true, "browsers drop the pair otherwise");
+  eq("a float expiry is floored", norm.expires, 1800000000);
+  ok("a session cookie keeps no expiry", mk([{ name: "a", value: "v", domain: ".x.com" }])[0].expires === undefined);
+
+  ok("a valid LinkedIn session validates", ck.validate("linkedin", mk([{ name: "li_at", value: "v", domain: ".linkedin.com", expirationDate: future }])).ok);
+  const wrong = ck.validate("linkedin", mk([{ name: "sessionid", value: "v", domain: ".instagram.com" }]));
+  ok("cookies from the wrong site are refused", !wrong.ok);
+  ok("...naming the cookie that's missing", /li_at/.test(wrong.why), wrong.why);
+  const dead = ck.validate("linkedin", mk([{ name: "li_at", value: "v", domain: ".linkedin.com", expirationDate: Math.floor(Date.now() / 1000) - 100 }]));
+  ok("an already-expired session is refused before import", !dead.ok && /expired/.test(dead.why),
+     "importing a dead cookie would 'succeed' and then fail silently");
+  const soon = ck.validate("linkedin", mk([{ name: "li_at", value: "v", domain: ".linkedin.com", expirationDate: Math.floor(Date.now() / 1000) + 2 * 86400 }]));
+  ok("an imminent expiry passes but warns", soon.ok && !!soon.warn);
+  const fb = ck.validate("facebook", mk([{ name: "c_user", value: "1", domain: ".facebook.com" }]));
+  ok("Facebook requires both c_user and xs", !fb.ok && /xs/.test(fb.why));
+
+  ok("whatsapp is not cookie-importable", !ck.cookieImportable("whatsapp"));
+  const wa = await ck.importCookies("whatsapp", "[]");
+  ok("...and importing it explains why", !wa.ok && /QR/.test(wa.why), wa.why);
+  const unknown = await ck.importCookies("myspace", "[]");
+  ok("an unknown platform is refused", !unknown.ok);
+
+  const so = await import("./engines/socials.mjs");
+  for (const [id, p] of Object.entries(ck.PLATFORMS)) {
+    ok(id + " declares a required session cookie", p.required.length > 0);
+    ok(id + " declares its domains", p.domains.length > 0);
+    if (so.PLATFORMS[id]) {
+      const want = so.PLATFORMS[id].profile || "social-" + id;
+      eq(id + " writes to the profile its engine reads", p.profile, want);
+    }
+  }
+}
+
+// ===========================================================================
+G("dashboard — remote onboarding");
+{
+  const src = fs.readFileSync(path.join(ROOT, "dashboard.mjs"), "utf8");
+  const has = (s) => src.includes(s);
+
+  ok("a token is required for every write", has("tokenOk(given)"));
+  ok("the token compare is length-safe",
+     has("timingSafeEqual") && has('createHash("sha256")'),
+     "a prefix match must not authenticate");
+  ok("loopback is the default bind", has('STATUS_BIND || "127.0.0.1"'));
+  ok("a token is generated when absent", has("randomBytes(16)"));
+  ok("request bodies are size-capped", has("too large"), "an unbounded POST is a free OOM");
+  ok("blank key fields do not clobber stored values", has("if (v) { setEnv"));
+  ok("secrets are never echoed back into the page", !has('value="' + "$" + '{esc(cur)}"'));
+  ok("the referrer is suppressed", has("no-referrer"), "the token travels in the URL");
+  ok("HTML is escaped", has("const esc ="));
+  ok("it serves the setup wizard", has("pageSetup"));
+  ok("it serves per-platform connect pages", has("pageConnect"));
+  ok("it names what still needs the Mac", has("Full Disk Access"));
+  ok("the old read-only server is gone", !fs.existsSync(path.join(ROOT, "statusweb.mjs")),
+     "two servers bound to one port would fight");
+
+  const l = fs.readFileSync(path.join(ROOT, "launchd", "install-services.sh"), "utf8");
+  ok("launchd runs the dashboard", l.includes("dashboard.mjs") && !l.includes("statusweb"));
+
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  ok("npm run dashboard exists", !!pkg.scripts.dashboard);
+  ok("the superseded npm run status is gone", !pkg.scripts.status);
+}
+
+// ===========================================================================
 G("installer — the one-shot path");
 {
   const sh = fs.readFileSync(path.join(ROOT, "install-mac.sh"), "utf8");
-  ok("refuses to run off macOS", /uname -s.*Darwin/.test(sh));
-  ok("gates on a license", /ALLOWED_HASHES/.test(sh));
-  ok("the master hash is present", /abd0fb08d15c821c012a6c6f0ed5385ad0adbc2c953527893b782ec1fe880ce1/.test(sh));
-  ok("reads the key from the real terminal, not the pipe", /read -r KEY <\/dev\/tty/.test(sh));
-  ok("hands the TUI a real terminal", /exec node tui\.mjs <\/dev\/tty/.test(sh),
+  const has = (s) => sh.includes(s);
+  ok("refuses to run off macOS", has("Darwin"));
+  ok("gates on a license", has("ALLOWED_HASHES"));
+  ok("the master hash is present", has("abd0fb08d15c821c012a6c6f0ed5385ad0adbc2c953527893b782ec1fe880ce1"));
+  ok("reads the key from the real terminal, not the pipe", has("read -r KEY </dev/tty"));
+  ok("hands the TUI a real terminal", has("exec node tui.mjs </dev/tty"),
      "without this, curl | bash exits instantly at the end");
-  ok("seeds .env from environment variables", /SEEDED/.test(sh));
-  ok("seeds with awk, not sed", /awk -v k=/.test(sh),
+  ok("seeds .env from environment variables", has("SEEDED"));
+  ok("seeds with awk, not sed", has("awk -v k="),
      "a token containing / or & would corrupt a sed replacement");
-  ok("does not clobber a filled-in value by default", /ORION_FORCE_ENV/.test(sh));
-  ok("generates a status token when absent", /STATUS_TOKEN/.test(sh));
-  ok("supports unattended finish", /ORION_AUTO/.test(sh));
-  ok("has no CRLF line endings", !/\r/.test(sh), "CRLF breaks curl | bash outright");
+  ok("does not clobber a filled-in value by default", has("ORION_FORCE_ENV"));
+  ok("generates a status token when absent", has("STATUS_TOKEN"));
+  ok("supports an unattended finish", has("ORION_AUTO"));
+  ok("hands over the dashboard link at the end", has("Finish setup from any device"),
+     "the client onboards from that URL, not from this Mac");
+  ok("has no CRLF line endings", !sh.includes(String.fromCharCode(13)), "CRLF breaks curl | bash outright");
 
-  const parse = await execFileP("bash", ["-n", path.join(ROOT, "install-mac.sh")]).then(() => true).catch(() => false);
-  ok("the script parses", parse);
+  const parses = async (f) => execFileP("bash", ["-n", path.join(ROOT, f)]).then(() => true).catch(() => false);
+  ok("the installer parses", await parses("install-mac.sh"));
+  ok("the service installer parses", await parses("launchd/install-services.sh"));
+  ok("the service uninstaller parses", await parses("launchd/uninstall-services.sh"));
 
-  for (const f of ["launchd/install-services.sh", "launchd/uninstall-services.sh"]) {
-    const p = await execFileP("bash", ["-n", path.join(ROOT, f)]).then(() => true).catch(() => false);
-    ok(`${f} parses`, p);
-  }
   const inst = fs.readFileSync(path.join(ROOT, "launchd", "install-services.sh"), "utf8");
   const unin = fs.readFileSync(path.join(ROOT, "launchd", "uninstall-services.sh"), "utf8");
   for (const svc of ["bot", "scheduler", "status"]) {
-    ok(`launchd installs the ${svc} service`, inst.includes(`com.orion.assistant.${svc}`));
-    ok(`...and can remove it`, unin.includes(`com.orion.assistant.${svc}`));
+    ok("launchd installs the " + svc + " service", inst.includes("com.orion.assistant." + svc));
+    ok("...and can remove it", unin.includes("com.orion.assistant." + svc));
   }
-  ok("services restart on crash", /KeepAlive/.test(inst));
+  ok("services restart on crash", inst.includes("KeepAlive"));
 }
 
 // ===========================================================================
 G("packaging");
 {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
-  for (const s of ["setup", "bot", "scheduler", "start", "selftest", "status", "install:service"]) {
-    ok(`npm run ${s} exists`, !!pkg.scripts[s]);
+  for (const s of ["setup", "bot", "scheduler", "start", "selftest", "dashboard", "install:service"]) {
+    ok("npm run " + s + " exists", !!pkg.scripts[s]);
   }
-  ok("declares node 20+", /20/.test(pkg.engines?.node || ""));
+  ok("declares node 20+", String(pkg.engines && pkg.engines.node || "").includes("20"));
+
   const gi = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8");
-  ok(".env is gitignored", /^\.env$/m.test(gi));
-  ok("data/ is gitignored", /^data\/$/m.test(gi), "profiles, leads and the queue must never be committed");
+  ok(".env is gitignored", gi.split(/\r?\n/).includes(".env"));
+  ok("data/ is gitignored", gi.split(/\r?\n/).includes("data/"),
+     "profiles, leads and the queue must never be committed");
 
   for (const f of ["config/targets.json", "config/brief.json", "config/services.json", "config/orion-theme.json"]) {
     let valid = true;
     try { JSON.parse(fs.readFileSync(path.join(ROOT, f), "utf8")); } catch { valid = false; }
-    ok(`${f} is valid JSON`, valid);
+    ok(f + " is valid JSON", valid);
   }
 
   const example = fs.readFileSync(path.join(ROOT, ".env.example"), "utf8");
-  for (const k of ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USER_IDS", "DEEPSEEK_API_KEY", "ORION_RELAY_BOT_TOKEN", "STATUS_TOKEN"]) {
-    ok(`.env.example documents ${k}`, example.includes(k));
+  for (const k of ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USER_IDS", "DEEPSEEK_API_KEY",
+                   "ORION_RELAY_BOT_TOKEN", "STATUS_TOKEN", "STATUS_BIND"]) {
+    ok(".env.example documents " + k, example.includes(k));
   }
-  ok(".env.example ships no real values", !/sk-[A-Za-z0-9]{20,}|\d{9,10}:AA/.test(example));
+  ok(".env.example ships no real values",
+     !/sk-[A-Za-z0-9]{20,}/.test(example) && !/[0-9]{9,10}:AA/.test(example));
 }
 
 // ===========================================================================
 G("the send path — nothing sends itself");
 {
   // The single most important invariant in the system, asserted structurally.
-  const engines = ["imessage", "reddit", "socials", "whatsapp", "linkedin"];
-  for (const e of engines) {
-    const src = fs.readFileSync(path.join(ROOT, "engines", `${e}.mjs`), "utf8");
-    ok(`${e} never calls another engine's send`,
-       !/from "\.\/(imessage|whatsapp|socials)\.mjs"/.test(src));
+  for (const e of ["imessage", "reddit", "socials", "whatsapp", "linkedin"]) {
+    const src = fs.readFileSync(path.join(ROOT, "engines", e + ".mjs"), "utf8");
+    const importsPeer = ["imessage", "whatsapp", "socials"].some((peer) =>
+      peer !== e && src.includes('from "./' + peer + '.mjs"'));
+    ok(e + " never calls another engine\u2019s send", !importsPeer);
   }
   const sched = fs.readFileSync(path.join(ROOT, "scheduler.mjs"), "utf8");
-  ok("the 24/7 scheduler never sends", !/\.send\(|\.submit\(|socials\.post\(/.test(sched),
+  ok("the 24/7 scheduler never sends",
+     !sched.includes(".send(") && !sched.includes(".submit(") && !sched.includes("socials.post("),
      "the unattended loop must only draft and notify");
   const bot = fs.readFileSync(path.join(ROOT, "bot.mjs"), "utf8");
-  ok("only the bot performs sends", /function performSend/.test(bot));
-  ok("...and only after claiming the item", /setStatus\(ref, "sending"\)/.test(bot),
-     "claiming before sending is what stops a double-tap sending twice");
-  ok("the bot has an allowlist", /TELEGRAM_ALLOWED_USER_IDS/.test(bot));
-  ok("an empty allowlist locks the bot rather than opening it",
-     /ALLOWED\.includes/.test(bot));
+  ok("only the bot performs sends", bot.includes("function performSend"));
+  ok("...and claims the item before sending", bot.includes('setStatus(ref, "sending")'),
+     "claiming first is what stops a double-tap sending twice");
+  ok("the bot has an allowlist", bot.includes("TELEGRAM_ALLOWED_USER_IDS"));
+  ok("an empty allowlist locks the bot rather than opening it", bot.includes("ALLOWED.includes"));
 }
 
 } finally {

@@ -291,7 +291,7 @@ await check("status board renders", async () => {
   return `${b.rows.length} services · ${b.counts.up} up, ${b.counts.down} down`;
 });
 
-await check("remote status page reachable", async () => {
+await check("dashboard reachable", async () => {
   const port = process.env.STATUS_PORT || 8791;
   try {
     const c = new AbortController();
@@ -301,7 +301,7 @@ await check("remote status page reachable", async () => {
     if (!r.ok) throw new Error("health returned " + r.status);
     return `serving on :${port}`;
   } catch {
-    return { warn: "not running - you can't check this Mac remotely", fix: "npm run install:service   (or: STATUS_BIND=0.0.0.0 npm run status)" };
+    return { warn: "not running - no remote setup or status page", fix: "npm run install:service   (or: STATUS_BIND=0.0.0.0 npm run dashboard)" };
   }
 });
 

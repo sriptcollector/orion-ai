@@ -68,6 +68,13 @@ function banner() {
   rule();
 }
 
+// The dashboard link, with its token - this is what a client actually uses.
+function dashUrl() {
+  const tok = process.env.STATUS_TOKEN || "";
+  const host = (process.env.STATUS_BIND && process.env.STATUS_BIND !== "127.0.0.1") ? os.hostname() : "127.0.0.1";
+  return "http://" + host + ":" + (process.env.STATUS_PORT || 8791) + "/setup" + (tok ? "?t=" + tok : "");
+}
+
 const mark = (ok, warn = false) => (ok ? `${C.green}●${C.x}` : warn ? `${C.yellow}●${C.x}` : `${C.red}○${C.x}`);
 
 // ------------------------------------------------------------------ status
@@ -193,7 +200,11 @@ async function screenLogins() {
   for (;;) {
     banner();
     out(`  ${C.b}Accounts${C.x}\n`);
-    out(`  ${C.d}Sign in once per account. The session is saved on this Mac and`);
+    out(`  ${C.d}Easiest way: open the dashboard from your own computer and paste your`);
+    out(`  cookies in. No passwords, no 2FA prompts, nothing to install here.`);
+    out(`  ${dashUrl()}${C.x}`);
+    out();
+    out(`  ${C.d}Or sign in here, in a browser window on this Mac. The session is`);
     out(`  reused after that. Your passwords are never seen or stored by this app.${C.x}\n`);
     const rows = [["LinkedIn", linkedin.isLoggedIn(), ["engines/linkedin.mjs", "login"]]];
     for (const n of socials.platformNames()) {

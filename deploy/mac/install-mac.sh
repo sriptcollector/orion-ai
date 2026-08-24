@@ -159,6 +159,13 @@ else
   dim "  5  Check everything confirm it all works"
 fi
 echo
+TOKV=$(grep -E "^STATUS_TOKEN=" .env | cut -d= -f2-)
+bold "Finish setup from any device:"
+echo "  http://$(hostname):${STATUS_PORT:-8791}/setup?t=$TOKV"
+echo
+dim "That page connects your accounts by pasting cookies from a browser you are"
+dim "already logged in on - no passwords, and nothing to install on this Mac."
+echo
 dim "Reopen this screen anytime:  cd $APP && npm run setup"
 echo
 sleep 2
