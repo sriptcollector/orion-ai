@@ -1,0 +1,23 @@
+{
+  "name": "orion-mac-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram-controlled outreach assistant: LinkedIn scraping, Reddit + socials posting, iMessage. Runs 24/7 on a Mac.",
+  "scripts": {
+    "setup": "node tui.mjs",
+    "bot": "node bot.mjs",
+    "scheduler": "node scheduler.mjs",
+    "start": "node start.mjs",
+    "selftest": "node selftest.mjs",
+    "login:linkedin": "node engines/linkedin.mjs login",
+    "login:x": "node engines/socials.mjs login x",
+    "login:instagram": "node engines/socials.mjs login instagram",
+    "install:service": "bash launchd/install-services.sh",
+    "uninstall:service": "bash launchd/uninstall-services.sh"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}

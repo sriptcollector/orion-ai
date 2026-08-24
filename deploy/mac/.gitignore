@@ -1,0 +1,4 @@
+# Secrets and per-machine state. Never leaves the client's Mac.
+.env
+data/
+node_modules/

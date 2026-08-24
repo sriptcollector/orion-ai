@@ -1,0 +1,9 @@
+{
+  "_comment": "LinkedIn searches the 24/7 sweep rotates through. Edit here, or add from Telegram with /target <search>. A full LinkedIn search URL also works.",
+  "linkedin": {
+    "searches": [
+      "founder",
+      "head of marketing"
+    ]
+  }
+}
