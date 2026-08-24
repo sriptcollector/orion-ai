@@ -585,27 +585,102 @@ G("packaging");
 }
 
 // ===========================================================================
+G("send — claim, concurrency, recovery");
+{
+  const q = await import("./lib/queue.mjs");
+  const s = await import("./lib/send.mjs");
+  wipe("queue");
+
+  const it = q.enqueue({ kind: "social", title: "t", preview: "p", payload: { platform: "x", text: "hi" } });
+  const first = q.claim(it.id);
+  ok("a pending item can be claimed", !!first);
+  ok("the same item cannot be claimed twice", q.claim(it.id) === null,
+     "this is the cross-process guard against a double-send");
+  ok("a claimed item leaves the pending list", !q.pending().some((x) => x.id === it.id));
+  q.release(it.id);
+
+  q.setStatus(it.id, "pending");
+  ok("released, it can be claimed again", !!q.claim(it.id));
+  q.release(it.id);
+  q.setStatus(it.id, "pending");
+
+  // Two approvals racing: exactly one may reach the engine.
+  const results = await Promise.all([
+    s.approve(it.id, { via: "a" }),
+    s.approve(it.id, { via: "b" }),
+  ]);
+  const refused = results.filter((r) => /already sending|already/.test(r.why || "")).length;
+  eq("exactly one of two racing approvals is refused", refused, 1);
+  ok("the item ends decided, not stuck", ["sent", "failed"].includes(q.getItem(it.id).status));
+
+  ok("approving an unknown id is refused cleanly", !(await s.approve("nope")).ok);
+  ok("skipping an unknown id is refused cleanly", !s.skip("nope").ok);
+  ok("rewriting an unknown id is refused cleanly", !(await s.redo("nope")).ok);
+
+  const parked = q.enqueue({ kind: "imessage", title: "no number", preview: "hi", payload: { to: "", text: "hi" } });
+  const noNum = await s.approve(parked.id);
+  ok("a draft with no recipient will not send", !noNum.ok && /no phone number/.test(noNum.why), noNum.why);
+  ok("...and stays pending for a number", q.getItem(parked.id).status === "pending");
+  ok("a bad number is refused on attach", !s.attachRecipient(parked.id, "garbage").ok);
+  const att = s.attachRecipient(parked.id, "3105551212");
+  ok("a good number attaches", att.ok && att.item.payload.to === "+13105551212");
+  s.skip(parked.id);
+
+  // A crash mid-send must not freeze the queue forever.
+  const stuck = q.enqueue({ kind: "social", title: "stuck", preview: "p", payload: { platform: "x" } });
+  q.claim(stuck.id);
+  const rawq = q.raw();
+  q.writeRaw({ ...rawq, items: rawq.items.map((i) => (i.id === stuck.id
+    ? { ...i, decidedAt: new Date(Date.now() - 60 * 60000).toISOString() } : i)) });
+  const recovered = q.recoverStuck(15);
+  ok("a crash-stranded send is recovered", recovered >= 1);
+  ok("...back to pending, so a human sees it again", q.getItem(stuck.id).status === "pending");
+  wipe("queue");
+}
+
+// ===========================================================================
 G("the send path — nothing sends itself");
 {
-  // The single most important invariant in the system, asserted structurally.
+  // The most important invariant in the system, asserted structurally. There
+  // are now TWO human surfaces that can approve a draft, so the guarantee has
+  // to hold in one shared place rather than being reimplemented in each.
+  const sendSrc = fs.readFileSync(path.join(ROOT, "lib", "send.mjs"), "utf8");
+  ok("one module dispatches every send", sendSrc.includes("async function dispatch"));
+  ok("...and claims the item first", sendSrc.includes("queue.claim(itemId)"),
+     "claiming before sending is what stops two surfaces double-sending");
+  ok("...and always releases the claim", sendSrc.includes("finally") && sendSrc.includes("queue.release"));
+
+  // No engine may reach into another engine's send.
   for (const e of ["imessage", "reddit", "socials", "whatsapp", "linkedin"]) {
     const src = fs.readFileSync(path.join(ROOT, "engines", e + ".mjs"), "utf8");
     const importsPeer = ["imessage", "whatsapp", "socials"].some((peer) =>
       peer !== e && src.includes('from "./' + peer + '.mjs"'));
-    ok(e + " never calls another engine\u2019s send", !importsPeer);
+    ok(e + " never calls another engine send", !importsPeer);
   }
+
+  // Only send.mjs may call an engine send function.
+  for (const f of ["bot.mjs", "dashboard.mjs", "scheduler.mjs"]) {
+    const src = fs.readFileSync(path.join(ROOT, f), "utf8");
+    const direct = src.includes("imessage.send(") || src.includes("whatsapp.send(") ||
+                   src.includes("socials.post(") || src.includes("reddit.submit(");
+    ok(f + " does not call an engine send directly", !direct,
+       "it must go through lib/send.mjs so the claim is not bypassed");
+  }
+
   const sched = fs.readFileSync(path.join(ROOT, "scheduler.mjs"), "utf8");
-  ok("the 24/7 scheduler never sends",
-     !sched.includes(".send(") && !sched.includes(".submit(") && !sched.includes("socials.post("),
+  ok("the 24/7 scheduler never sends at all",
+     !sched.includes("approve(") && !sched.includes(".send(") && !sched.includes(".submit("),
      "the unattended loop must only draft and notify");
+
   const bot = fs.readFileSync(path.join(ROOT, "bot.mjs"), "utf8");
-  ok("only the bot performs sends", bot.includes("function performSend"));
-  ok("...and claims the item before sending", bot.includes('setStatus(ref, "sending")'),
-     "claiming first is what stops a double-tap sending twice");
+  ok("the bot approves via the shared path", bot.includes("send.approve("));
   ok("the bot has an allowlist", bot.includes("TELEGRAM_ALLOWED_USER_IDS"));
   ok("an empty allowlist locks the bot rather than opening it", bot.includes("ALLOWED.includes"));
-}
 
+  const dash = fs.readFileSync(path.join(ROOT, "dashboard.mjs"), "utf8");
+  ok("the dashboard approves via the shared path", dash.includes("outbox.approve("));
+  ok("the dashboard requires a token before any write", dash.includes("tokenOk(given)"));
+}
 } finally {
   restore();
 }

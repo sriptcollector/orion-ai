@@ -22,6 +22,17 @@ import { loadEnv, setEnv } from "./lib/env.mjs";
 import { logger } from "./lib/log.mjs";
 import { board, renderText } from "./lib/services.mjs";
 import { PLATFORMS as COOKIE_PLATFORMS, importCookies, clearCookies } from "./lib/cookies.mjs";
+import { makePages } from "./lib/pages.mjs";
+import * as queue from "./lib/queue.mjs";
+import * as outbox from "./lib/send.mjs";
+import * as draft from "./lib/draft.mjs";
+import { getSettings, saveSettings } from "./lib/settings.mjs";
+import { read as readStore, write as writeStore } from "./lib/store.mjs";
+import * as imessage from "./engines/imessage.mjs";
+import * as linkedin from "./engines/linkedin.mjs";
+import path from "node:path";
+import fs from "node:fs";
+import { ROOT, DATA } from "./lib/env.mjs";
 
 loadEnv();
 const log = logger("dashboard");
@@ -105,6 +116,9 @@ button:disabled{opacity:.5;cursor:default}
 .msg.err{background:rgba(248,81,73,.14);border:1px solid rgba(248,81,73,.4)}
 ol{padding-left:20px}ol li{margin-bottom:5px}
 code{background:var(--card);padding:1px 5px;border-radius:4px;font-size:12px;border:1px solid var(--line)}
+pre.draft{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:11px;white-space:pre-wrap;word-wrap:break-word;font-size:13px;max-height:280px;overflow:auto;margin:9px 0}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap}
+.btnrow form{display:inline}
 footer{margin-top:30px;color:var(--dim);font-size:12px;text-align:center}
 `;
 
@@ -148,6 +162,9 @@ ${body}
 
 const navBar = (active) => `<nav>
   <a data-to="/" class="${active === "status" ? "on" : ""}">Status</a>
+  <a data-to="/queue" class="${active === "queue" ? "on" : ""}">Approvals</a>
+  <a data-to="/messages" class="${active === "messages" ? "on" : ""}">Messages</a>
+  <a data-to="/control" class="${active === "control" ? "on" : ""}">Control</a>
   <a data-to="/setup" class="${active === "setup" ? "on" : ""}">Setup</a>
   <a data-to="/accounts" class="${active === "accounts" ? "on" : ""}">Accounts</a>
   <a data-to="/keys" class="${active === "keys" ? "on" : ""}">Keys</a>
@@ -289,6 +306,10 @@ function pageKeys(q) {
     <form data-post="/api/keys" data-back="/keys">${fields}<button>Save keys</button></form>`);
 }
 
+// The control pages live in lib/pages.mjs; they take the shared chrome so
+// there is one look and one escaping function across every page.
+const { pageQueue, pageMessages, pageControl } = makePages({ page, navBar, banner, esc, COLOR });
+
 // -------------------------------------------------------------------- api
 
 async function readBody(req) {
@@ -347,6 +368,83 @@ const server = http.createServer(async (req, res) => {
         return json(200, r.ok ? { ok: true, message: "Disconnected." } : { ok: false, why: r.why });
       }
 
+
+      // Every send from this surface goes through the same claim-and-send path
+      // the Telegram bot uses, so the two surfaces cannot double-send a draft.
+      if (u.pathname === "/api/approve") {
+        const r = await outbox.approve(String(body.id || ""), { via: "dashboard" });
+        return json(200, r.ok
+          ? { ok: true, message: "Sent." + (r.detail ? " " + String(r.detail).slice(0, 120) : "") }
+          : { ok: false, why: r.why });
+      }
+      if (u.pathname === "/api/skip") {
+        const r = outbox.skip(String(body.id || ""));
+        return json(200, r.ok ? { ok: true, message: "Skipped." } : { ok: false, why: r.why });
+      }
+      if (u.pathname === "/api/redo") {
+        const r = await outbox.redo(String(body.id || ""));
+        return json(200, r.ok ? { ok: true, message: "Rewritten - read it again." } : { ok: false, why: r.why });
+      }
+      if (u.pathname === "/api/attach") {
+        const r = outbox.attachRecipient(String(body.id || ""), String(body.to || ""));
+        return json(200, r.ok ? { ok: true, message: "Number attached." } : { ok: false, why: r.why });
+      }
+
+      if (u.pathname === "/api/compose") {
+        const to = imessage.normalizeRecipient(String(body.to || ""));
+        if (!to.ok) return json(200, { ok: false, why: to.why });
+        const angle = String(body.angle || "").trim();
+        if (!angle) return json(200, { ok: false, why: "say what you want to get across" });
+        let text;
+        try { text = await draft.imessageDraft({ name: "", headline: "" }, { angle }); }
+        catch (e) { return json(200, { ok: false, why: "could not write it: " + String(e.message).slice(0, 140) }); }
+        queue.enqueue({ kind: "imessage", title: "to " + to.id, preview: text,
+          payload: { to: to.id, text, angle, dedupeKey: to.id }, source: "dashboard" });
+        return json(200, { ok: true, message: "Drafted - approve it below." });
+      }
+
+      if (u.pathname === "/api/reply") {
+        const who = String(body.to || "");
+        const hist = await imessage.recent({ sinceMs: Date.now() - 7 * 86400000, limit: 200 });
+        const thread = (hist.messages || []).filter((m) => m.from === who).reverse().slice(-12);
+        if (!thread.length) return json(200, { ok: false, why: "no conversation found with " + who });
+        let text;
+        try { text = await draft.replyDraft(thread); }
+        catch (e) { return json(200, { ok: false, why: "could not write it: " + String(e.message).slice(0, 140) }); }
+        queue.enqueue({ kind: "imessage", title: "reply to " + who, preview: text,
+          payload: { to: who, text, dedupeKey: "" }, source: "dashboard-reply" });
+        return json(200, { ok: true, message: "Reply drafted - it is in Approvals." });
+      }
+
+      if (u.pathname === "/api/pause") {
+        const paused = String(body.paused) === "1";
+        saveSettings({ paused });
+        return json(200, { ok: true, message: paused ? "Paused." : "Running again." });
+      }
+      if (u.pathname === "/api/hours") {
+        const a = Number(body.from), z = Number(body.to);
+        if (!Number.isInteger(a) || !Number.isInteger(z) || a < 0 || z > 24 || a >= z) {
+          return json(200, { ok: false, why: "give a start and end hour, start before end" });
+        }
+        saveSettings({ activeHours: [a, z] });
+        return json(200, { ok: true, message: "Active " + a + ":00-" + z + ":00." });
+      }
+      if (u.pathname === "/api/target") {
+        const s = String(body.search || "").trim();
+        if (!s) return json(200, { ok: false, why: "empty search" });
+        const tgts = readStore("targets", null) || linkedin.targets();
+        tgts.linkedin = tgts.linkedin || { searches: [] };
+        tgts.linkedin.searches = [...new Set([...(tgts.linkedin.searches || []), s])];
+        writeStore("targets", tgts);
+        return json(200, { ok: true, message: "Added. " + tgts.linkedin.searches.length + " searches in rotation." });
+      }
+      if (u.pathname === "/api/scrape") {
+        const r = await linkedin.sweep();
+        return json(200, r.ok
+          ? { ok: true, message: r.added + " new leads (" + r.seen + " seen)." }
+          : { ok: false, why: r.why });
+      }
+
       return json(404, { ok: false, why: "unknown endpoint" });
     }
 
@@ -354,6 +452,9 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/status.txt") return send(200, renderText(await board()), "text/plain; charset=utf-8");
     if (u.pathname === "/") return send(200, await pageStatus(u.searchParams));
     if (u.pathname === "/setup") return send(200, await pageSetup(u.searchParams));
+    if (u.pathname === "/queue") return send(200, await pageQueue(u.searchParams));
+    if (u.pathname === "/messages") return send(200, await pageMessages(u.searchParams));
+    if (u.pathname === "/control") return send(200, await pageControl(u.searchParams));
     if (u.pathname === "/accounts") return send(200, await pageAccounts(u.searchParams));
     if (u.pathname === "/keys") return send(200, pageKeys(u.searchParams));
     const m = u.pathname.match(/^\/connect\/([a-z]+)$/);
@@ -364,6 +465,9 @@ const server = http.createServer(async (req, res) => {
     return send(500, "Something went wrong", "text/plain");
   }
 });
+
+const stuck = queue.recoverStuck();
+if (stuck) log(`recovered ${stuck} draft(s) left mid-send by an earlier crash`);
 
 server.listen(PORT, BIND, () => {
   const host = BIND === "0.0.0.0" ? os.hostname() : BIND;

@@ -21,6 +21,7 @@ import { getSettings, saveSettings } from "./lib/settings.mjs";
 import * as queue from "./lib/queue.mjs";
 import { toOrion, isAdmin, relayConfigured, flushOutbox } from "./lib/relay.mjs";
 import * as draft from "./lib/draft.mjs";
+import * as send from "./lib/send.mjs";
 import * as imessage from "./engines/imessage.mjs";
 import * as reddit from "./engines/reddit.mjs";
 import * as socials from "./engines/socials.mjs";
@@ -77,47 +78,8 @@ async function showItem(chat, item) {
   ]));
 }
 
-// The actual send. One switch, one place, reached only from a button tap.
-async function performSend(item) {
-  if (item.kind === "imessage") {
-    return imessage.send(item.payload.to, item.payload.text, { service: item.payload.service || "iMessage" });
-  }
-  if (item.kind === "reddit") {
-    const r = await reddit.submit({ subreddit: item.payload.subreddit, title: item.payload.title, text: item.payload.text });
-    return r.ok ? { ok: true, detail: r.url || `posted to r/${r.subreddit}` } : r;
-  }
-  if (item.kind === "whatsapp") {
-    const r = await whatsapp.send(item.payload.to, item.payload.text);
-    return r.ok ? { ok: true, detail: `sent to +${r.to}`, screenshot: r.screenshot } : r;
-  }
-  if (item.kind === "social") {
-    const r = await socials.post(item.payload.platform, item.payload.text, { imagePath: item.payload.imagePath || null });
-    return r.ok ? { ok: true, detail: r.url || "posted", screenshot: r.screenshot } : r;
-  }
-  return { ok: false, why: `unknown item kind "${item.kind}"` };
-}
-
-async function redraft(item) {
-  if (item.kind === "imessage") {
-    const text = await draft.imessageDraft(item.payload.lead || { name: item.payload.to }, { angle: item.payload.angle || "" });
-    return { ...item.payload, text };
-  }
-  if (item.kind === "reddit") {
-    const d = await draft.redditDraft({ subreddit: item.payload.subreddit, topic: item.payload.topic, rules: item.payload.rules || [] });
-    return { ...item.payload, title: d.title, text: d.text };
-  }
-  if (item.kind === "social") {
-    const limit = socials.PLATFORMS[item.payload.platform]?.limit || 280;
-    const text = await draft.socialDraft({ platform: item.payload.platform, topic: item.payload.topic, limit });
-    return { ...item.payload, text };
-  }
-  return item.payload;
-}
-
-const previewOf = (kind, p) =>
-  kind === "reddit" ? `${p.title}\n\n${p.text}` : p.text;
-const titleOf = (kind, p) =>
-  kind === "imessage" ? `to ${p.to}` : kind === "reddit" ? `r/${p.subreddit}` : `${socials.PLATFORMS[p.platform]?.label || p.platform}`;
+// Sending lives in lib/send.mjs, shared with the dashboard. Two surfaces can
+// approve the same draft, so claim-and-send has to live in exactly one place.
 
 // ------------------------------------------------------------------ status
 
@@ -448,31 +410,26 @@ async function handleCallback(cbq) {
   if (item.status !== "pending") { await ack(`Already ${item.status}.`); return; }
 
   if (action === "no") {
-    queue.setStatus(ref, "skipped");
-    await ack("Skipped");
-    return tg("editMessageText", { chat_id: chat, message_id: cbq.message.message_id, text: `❌ Skipped — ${esc(item.title)}`, parse_mode: "HTML" });
+    const r = send.skip(ref);
+    await ack(r.ok ? "Skipped" : r.why);
+    if (!r.ok) return;
+    return tg("editMessageText", { chat_id: chat, message_id: cbq.message.message_id,
+      text: `❌ Skipped — ${esc(item.title)}`, parse_mode: "HTML" });
   }
 
   if (action === "redo") {
     await ack("Rewriting…");
-    try {
-      const payload = await redraft(item);
-      queue.setStatus(ref, "skipped", "redrafted");
-      const fresh = queue.enqueue({ kind: item.kind, title: titleOf(item.kind, payload), preview: previewOf(item.kind, payload), payload, source: item.source });
-      return showItem(chat, fresh);
-    } catch (e) { return say(chat, `⚠️ Rewrite failed: ${esc(String(e.message || e))}`); }
+    const r = await send.redo(ref);
+    if (!r.ok) return say(chat, `⚠️ ${esc(r.why)}`);
+    return showItem(chat, r.item);
   }
 
   if (action === "ok") {
-    if (item.kind === "imessage" && !item.payload.to) {
-      await ack("No number on this one");
+    await ack("Sending…");
+    const res = await send.approve(ref, { via: "telegram" });
+    if (!res.ok && /no phone number/.test(res.why || "")) {
       return say(chat, "This draft has no phone number attached. Send it with:\n<code>/text +1XXXXXXXXXX …</code>");
     }
-    await ack("Sending…");
-    // Claim it BEFORE the send so a double-tap can't send twice.
-    queue.setStatus(ref, "sending");
-    const res = await performSend(item);
-    queue.setStatus(ref, res.ok ? "sent" : "failed", res.ok ? (res.detail || "sent") : res.why);
     await tg("editMessageText", {
       chat_id: chat, message_id: cbq.message.message_id, parse_mode: "HTML",
       text: res.ok
@@ -480,10 +437,8 @@ async function handleCallback(cbq) {
         : `⚠️ <b>Failed</b> — ${esc(item.title)}\n${esc(res.why || "unknown error")}`,
     });
     if (res.screenshot) await sendPhoto(chat, res.screenshot, "Proof of post");
-    if (!res.ok) await toOrion(`A send failed on ${CLIENT}.\n\nKind: ${item.kind}\nTarget: ${item.title}\nError: ${res.why}`, { kind: "alert" });
     return;
   }
-
   return ack();
 }
 
@@ -491,6 +446,8 @@ async function handleCallback(cbq) {
 
 async function main() {
   const meInfo = await tg("getMe");
+  const stuck = queue.recoverStuck();
+  if (stuck) log(`recovered ${stuck} draft(s) left mid-send by an earlier crash`);
   log("starting as", meInfo.result?.username || "?", "allowlist:", ALLOWED.join(",") || "(EMPTY - locked)");
   if (!ALLOWED.length) log("WARNING: TELEGRAM_ALLOWED_USER_IDS is empty. Nobody can use the bot until it's set.");
 
@@ -533,16 +490,11 @@ async function main() {
 // Replying to a parked draft with a phone number is the fastest path from
 // "found a lead" to "texted them", so it is worth supporting explicitly.
 async function handleReplyToDraft(chat, from, msg) {
-  const num = imessage.normalizeRecipient(msg.text);
-  if (!num.ok) return say(chat, "Reply to a draft with just a phone number to attach it, or use /help.");
-  const parked = queue.pending().filter((i) => i.kind === "imessage" && !i.payload.to);
+  const parked = queue.pending().filter((i) => (i.kind === "imessage" || i.kind === "whatsapp") && !i.payload.to);
   if (!parked.length) return say(chat, "No draft is waiting for a number.");
-  const item = parked[parked.length - 1];
-  item.payload.to = num.id;
-  item.payload.dedupeKey = num.id;
-  const all = read("queue", { items: [] });
-  write("queue", { ...all, items: all.items.map((i) => (i.id === item.id ? { ...i, payload: item.payload, title: `to ${num.id}` } : i)) });
-  return showItem(chat, queue.getItem(item.id));
+  const r = send.attachRecipient(parked[parked.length - 1].id, msg.text);
+  if (!r.ok) return say(chat, `⚠️ ${esc(r.why)}`);
+  return showItem(chat, r.item);
 }
 
 main().catch((e) => { log("FATAL", String(e.stack || e)); process.exit(1); });
