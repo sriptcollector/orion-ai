@@ -1,0 +1,4 @@
+{
+  "_comment": "Extra things to show on the status board. Tailscale, Chrome Remote Desktop, Telegram, LinkedIn, Reddit, WhatsApp, iMessage, socials, jobs and the chatbot are all probed automatically - do not list them here. Use this for anything else with a URL: a client's own site, a dashboard, an API. Each: {id, label, group?, url, expectStatus?, contains?}",
+  "services": []
+}

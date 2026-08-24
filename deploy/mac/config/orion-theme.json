@@ -1,0 +1,13 @@
+{
+  "_comment": "Per-client branding for the terminal. Copy per client and change brand/subtitle/accent. Accent takes a colour name (cyan, green, mag, yellow) or a brand hex like #ff6a00. Nothing here changes behaviour.",
+  "brand": "ORION",
+  "subtitle": "A I   A S S I S T A N T",
+  "watermark": "~ built by Orion Jones ~",
+  "accent": "cyan",
+  "supportEmail": "orionjones99@gmail.com",
+  "supportPhone": "424-422-5031",
+  "updatesUrl": "https://raw.githubusercontent.com/sriptcollector/orion-ai/main/deploy/updates.json",
+  "updates": [
+    { "date": "2026-08-24", "text": "First release: LinkedIn sweeps, Reddit + socials posting, iMessage, all approval-gated." }
+  ]
+}

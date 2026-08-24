@@ -36,6 +36,7 @@ make_plist () {
   <dict>
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>ORION_VERBOSE</key><string>0</string>
+    <key>STATUS_BIND</key><string>${STATUS_BIND:-0.0.0.0}</string>
   </dict>
 </dict>
 </plist>
@@ -50,10 +51,12 @@ PLIST
 echo "Installing launchd services from $DIR"
 make_plist "com.orion.assistant.bot" "bot.mjs"
 make_plist "com.orion.assistant.scheduler" "scheduler.mjs"
+make_plist "com.orion.assistant.status" "statusweb.mjs"
 
 echo
 echo "Done. Both services are running and will come back after a reboot."
 echo
+echo "  status page:  http://$(hostname):${STATUS_PORT:-8791}/   (token is in .env as STATUS_TOKEN)"
 echo "  status:   launchctl list | grep com.orion.assistant"
 echo "  logs:     tail -f $DIR/data/logs/bot.log"
 echo "  stop:     bash $DIR/launchd/uninstall-services.sh"

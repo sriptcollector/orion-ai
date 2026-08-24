@@ -14,7 +14,7 @@
 //
 // Nothing here posts on its own. Callers draft into the approval queue; bot.mjs
 // calls post() only after a human taps approve.
-import { withPage, open, hasProfile, detectChallenge, pause, humanType, shot, sleep } from "../lib/browser.mjs";
+import { withPage, open, hasProfile, detectChallenge, pause, typeHuman, shot, sleep } from "../lib/browser.mjs";
 import { mayAct } from "../lib/settings.mjs";
 import { logger } from "../lib/log.mjs";
 import { alertOnce } from "../lib/relay.mjs";
@@ -47,6 +47,8 @@ export const PLATFORMS = {
   },
   linkedin: {
     label: "LinkedIn",
+    // Same saved session the scraper uses. One LinkedIn login, not two.
+    profile: "linkedin",
     home: "https://www.linkedin.com/feed/",
     loginUrl: "https://www.linkedin.com/login",
     loggedIn: /linkedin\.com\/feed/,
@@ -95,14 +97,16 @@ export const PLATFORMS = {
 };
 
 export const platformNames = () => Object.keys(PLATFORMS);
-export const isLoggedIn = (name) => hasProfile(`social-${name}`);
+// Most platforms get their own profile; a platform may name a shared one.
+const profileOf = (name) => PLATFORMS[name]?.profile || `social-${name}`;
+export const isLoggedIn = (name) => hasProfile(profileOf(name));
 
 // One-time interactive login per platform. Opens a real window and waits for a
 // human to sign in. No social password is ever handled by this code.
 export async function login(name, { waitMinutes = 6 } = {}) {
   const p = PLATFORMS[name];
   if (!p) return { ok: false, why: `Unknown platform "${name}". Known: ${platformNames().join(", ")}` };
-  const { page, close } = await open(`social-${name}`, { headed: true, timeout: waitMinutes * 60000 });
+  const { page, close } = await open(profileOf(name), { headed: true, timeout: waitMinutes * 60000 });
   try {
     await page.goto(p.loginUrl, { waitUntil: "domcontentloaded" });
     log(name, "waiting for human login");
@@ -122,7 +126,7 @@ export async function checkSession(name) {
   if (!p) return { ok: false, why: "unknown platform" };
   if (!isLoggedIn(name)) return { ok: false, why: "never logged in" };
   try {
-    return await withPage(`social-${name}`, async (page) => {
+    return await withPage(profileOf(name), async (page) => {
       await page.goto(p.home, { waitUntil: "domcontentloaded" });
       await pause(2, 4);
       const ch = await detectChallenge(page);
@@ -154,7 +158,7 @@ export async function post(name, text, { imagePath = null, dryRun = false } = {}
   if (!isLoggedIn(name)) return { ok: false, why: `Not logged in to ${p.label}. Run:  node engines/socials.mjs login ${name}` };
 
   try {
-    return await withPage(`social-${name}`, async (page) => {
+    return await withPage(profileOf(name), async (page) => {
       await page.goto(p.compose || p.home, { waitUntil: "domcontentloaded" });
       await pause(3, 6);
 
@@ -190,13 +194,9 @@ export async function post(name, text, { imagePath = null, dryRun = false } = {}
 
       const editor = await first(page, p.editor, { timeout: 15000 });
       if (!editor) return { ok: false, why: `Could not find the ${p.label} text editor. The site layout likely changed.` };
-      await editor.click();
-      await pause(0.5, 1.5);
       // Type rather than fill: these are all contenteditable editors that ignore
       // a programmatic value set and leave the Post button disabled.
-      for (const part of body.split(/(\s+)/)) {
-        await page.keyboard.type(part, { delay: 20 + Math.random() * 40 });
-      }
+      await typeHuman(page, editor, body);
       await pause(1, 3);
 
       const submit = await first(page, p.submit, { timeout: 12000 });

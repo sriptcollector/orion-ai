@@ -12,7 +12,7 @@
 //      for a week because the cookie expired is worse than one that crashes.
 import path from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
-import { ROOT, DATA } from "./env.mjs";
+import { DATA } from "./env.mjs";
 import { logger } from "./log.mjs";
 
 const log = logger("browser");
@@ -82,14 +82,16 @@ export const rand = (min, max) => Math.floor(min + Math.random() * (max - min));
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const pause = (minSec, maxSec) => sleep(rand(minSec * 1000, maxSec * 1000));
 
-// Type at a human rate instead of pasting the whole string at once. Several of
-// these editors are contenteditable and drop a programmatic value set anyway.
-export async function humanType(page, selector, text) {
-  const el = await page.waitForSelector(selector, { state: "visible" });
-  await el.click();
-  for (const chunk of String(text).split(/(\s+)/)) {
-    await page.keyboard.type(chunk, { delay: rand(18, 55) });
-    if (Math.random() < 0.08) await sleep(rand(180, 500));
+// Type at a human rate instead of pasting the whole string at once. Two reasons:
+// a paste is an obvious bot tell, and these editors are all contenteditable, so
+// several of them ignore a programmatic value set and leave Post disabled.
+// Takes an already-resolved locator, because every caller has one by then.
+export async function typeHuman(page, locator, text) {
+  await locator.click();
+  await sleep(rand(300, 900));
+  for (const part of String(text).split(/(\s+)/)) {
+    await page.keyboard.type(part, { delay: rand(18, 55) });
+    if (Math.random() < 0.08) await sleep(rand(180, 500));   // a pause to think
   }
 }
 

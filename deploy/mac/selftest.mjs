@@ -213,6 +213,12 @@ await check("LinkedIn session saved", async () => {
   return "saved";
 });
 
+await check("WhatsApp linked", async () => {
+  const wa = await import("./engines/whatsapp.mjs");
+  if (!wa.isLoggedIn()) return { warn: "not linked - WhatsApp sending unavailable", fix: "node engines/whatsapp.mjs login   (scan the QR with the phone)" };
+  return "session saved";
+});
+
 await check("social sessions saved", async () => {
   const s = await import("./engines/socials.mjs");
   const on = s.platformNames().filter((n) => s.isLoggedIn(n));
@@ -276,14 +282,38 @@ await check("caps and pacing enforced", async () => {
   return gate.ok ? "engines allowed to act now" : `engines currently held: ${gate.why}`;
 });
 
+await check("status board renders", async () => {
+  const { board } = await import("./lib/services.mjs");
+  const b = await board();
+  if (!b.rows.length) throw new Error("board came back empty");
+  const dupes = b.rows.length - new Set(b.rows.map((r) => r.id)).size;
+  if (dupes) throw new Error(dupes + " duplicate rows on the board");
+  return `${b.rows.length} services · ${b.counts.up} up, ${b.counts.down} down`;
+});
+
+await check("remote status page reachable", async () => {
+  const port = process.env.STATUS_PORT || 8791;
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 4000);
+    const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: c.signal });
+    clearTimeout(t);
+    if (!r.ok) throw new Error("health returned " + r.status);
+    return `serving on :${port}`;
+  } catch {
+    return { warn: "not running - you can't check this Mac remotely", fix: "npm run install:service   (or: STATUS_BIND=0.0.0.0 npm run status)" };
+  }
+});
+
 await check("launchd services installed", async () => {
   if (process.platform !== "darwin") return { warn: "skipped — not macOS" };
   try {
     const { stdout } = await execFileP("launchctl", ["list"]);
-    const on = ["com.orion.assistant.bot", "com.orion.assistant.scheduler"].filter((l) => stdout.includes(l));
+    const want = ["com.orion.assistant.bot", "com.orion.assistant.scheduler", "com.orion.assistant.status"];
+    const on = want.filter((l) => stdout.includes(l));
     if (!on.length) return { warn: "not installed — nothing runs after a reboot", fix: "npm run install:service" };
-    if (on.length === 1) return { warn: `only ${on[0]} is loaded`, fix: "npm run install:service" };
-    return "both loaded";
+    if (on.length < want.length) return { warn: `only ${on.length}/${want.length} loaded (${on.join(", ")})`, fix: "npm run install:service" };
+    return "all three loaded";
   } catch (e) { throw new Error("launchctl failed: " + e.message); }
 });
 

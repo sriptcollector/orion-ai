@@ -11,7 +11,7 @@ import { loadEnv } from "./lib/env.mjs";
 import { api, chunk, esc } from "./lib/telegram.mjs";
 import { logger } from "./lib/log.mjs";
 import { read, write } from "./lib/store.mjs";
-import { getSettings, saveSettings, mayAct } from "./lib/settings.mjs";
+import { getSettings, mayAct } from "./lib/settings.mjs";
 import * as queue from "./lib/queue.mjs";
 import { flushOutbox, alertOnce, toOrion } from "./lib/relay.mjs";
 import * as linkedin from "./engines/linkedin.mjs";

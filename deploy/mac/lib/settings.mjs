@@ -29,6 +29,11 @@ export const DEFAULTS = {
     dailyCap: 40,
     minDelaySec: 60,
   },
+  whatsapp: {
+    enabled: true,
+    dailyCap: 30,
+    minDelaySec: 90,
+  },
   socials: {
     enabled: true,
     dailyPostCap: 6,             // across all platforms combined

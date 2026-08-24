@@ -13,7 +13,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadEnv, ROOT, setEnv } from "./lib/env.mjs";
+import { loadEnv, ROOT } from "./lib/env.mjs";
 import { api, chunk, esc } from "./lib/telegram.mjs";
 import { logger } from "./lib/log.mjs";
 import { read, write } from "./lib/store.mjs";
@@ -25,6 +25,7 @@ import * as imessage from "./engines/imessage.mjs";
 import * as reddit from "./engines/reddit.mjs";
 import * as socials from "./engines/socials.mjs";
 import * as linkedin from "./engines/linkedin.mjs";
+import * as whatsapp from "./engines/whatsapp.mjs";
 
 loadEnv();
 const log = logger("bot");
@@ -84,6 +85,10 @@ async function performSend(item) {
   if (item.kind === "reddit") {
     const r = await reddit.submit({ subreddit: item.payload.subreddit, title: item.payload.title, text: item.payload.text });
     return r.ok ? { ok: true, detail: r.url || `posted to r/${r.subreddit}` } : r;
+  }
+  if (item.kind === "whatsapp") {
+    const r = await whatsapp.send(item.payload.to, item.payload.text);
+    return r.ok ? { ok: true, detail: `sent to +${r.to}`, screenshot: r.screenshot } : r;
   }
   if (item.kind === "social") {
     const r = await socials.post(item.payload.platform, item.payload.text, { imagePath: item.payload.imagePath || null });
@@ -156,6 +161,7 @@ const HELP = `<b>What I can do</b>
 
 <b>Control</b>
 /status — health of everything
+/services — every system: Tailscale, remote desktop, LinkedIn, Reddit, WhatsApp, socials, jobs
 /pause · /resume — master switch
 /hours 8 22 — when it's allowed to act
 /brief &lt;text&gt; — describe the business (this drives every draft)
@@ -176,9 +182,20 @@ async function handleCommand(chat, from, text) {
     case "/help":
       return say(chat, `👋 <b>${esc(CLIENT)}</b> is online.\n\n${HELP}`);
 
+    case "/services": {
+      await say(chat, "🔍 Checking every system…");
+      const { board, renderText } = await import("./lib/services.mjs");
+      const bd = await board();
+      const links = bd.rows.filter((r) => r.url && r.state !== "off").slice(0, 6)
+        .map((r) => `<a href="${esc(r.url)}">${esc(r.label)}</a>`).join(" · ");
+      return say(chat, `<pre>${esc(renderText(bd))}</pre>${links ? `
+${links}` : ""}`,
+        kb([[btn("🔄 Refresh", "go:services"), btn("📊 Summary", "go:status")]]));
+    }
+
     case "/status":
       return say(chat, await statusText(), kb([
-        [btn("📥 Pending", "go:pending"), btn("👤 Leads", "go:leads")],
+        [btn("📥 Pending", "go:pending"), btn("👤 Leads", "go:leads"), btn("🩺 Services", "go:services")],
         [btn(getSettings().paused ? "▶️ Resume" : "⏸ Pause", "go:toggle"), btn("🔄 Refresh", "go:status")],
       ]));
 
@@ -385,6 +402,7 @@ async function handleCallback(cbq) {
     if (ref === "pending") return handleCommand(chat, cbq.from, "/pending");
     if (ref === "leads") return handleCommand(chat, cbq.from, "/leads");
     if (ref === "status") return handleCommand(chat, cbq.from, "/status");
+    if (ref === "services") return handleCommand(chat, cbq.from, "/services");
     if (ref === "toggle") { saveSettings({ paused: !getSettings().paused }); return handleCommand(chat, cbq.from, "/status"); }
     return;
   }

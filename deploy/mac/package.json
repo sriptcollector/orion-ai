@@ -14,9 +14,14 @@
     "login:x": "node engines/socials.mjs login x",
     "login:instagram": "node engines/socials.mjs login instagram",
     "install:service": "bash launchd/install-services.sh",
-    "uninstall:service": "bash launchd/uninstall-services.sh"
+    "uninstall:service": "bash launchd/uninstall-services.sh",
+    "status": "node statusweb.mjs",
+    "login:whatsapp": "node engines/whatsapp.mjs login",
+    "services": "node -e \"import(String.raw`./lib/services.mjs`).then(async m=>console.log(m.renderText(await m.board())))\""
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "playwright": "^1.49.0"
   }

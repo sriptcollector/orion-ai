@@ -36,7 +36,21 @@ const T = loadTheme();
 const BRAND = T.brand || process.env.CLIENT_NAME || "ORION";
 const SUBTITLE = T.subtitle || "A I   A S S I S T A N T";
 const WATERMARK = T.watermark || "~ built by Orion Jones ~";
-const ACCENT = T.accent || C.cyan;
+// Accent by name ("cyan") or hex ("#ff6a00"). Never a raw escape sequence — a
+// theme file is something a human edits, and hex is what a brand guide gives you.
+function resolveAccent(v) {
+  if (!v) return C.cyan;
+  if (C[v]) return C[v];
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(v);
+  if (m) return `\x1b[38;2;${parseInt(m[1], 16)};${parseInt(m[2], 16)};${parseInt(m[3], 16)}m`;
+  return C.cyan;
+}
+const ACCENT = resolveAccent(T.accent);
+const SUPPORT_EMAIL = process.env.ORION_SUPPORT_EMAIL || T.supportEmail || "orionjones99@gmail.com";
+const SUPPORT_PHONE = process.env.ORION_SUPPORT_PHONE || T.supportPhone || "424-422-5031";
+// A feed Orion controls, so shipping an update makes it visible in every
+// client's terminal without anyone reinstalling anything.
+const UPDATES_URL = T.updatesUrl || "https://raw.githubusercontent.com/sriptcollector/orion-ai/main/deploy/updates.json";
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const ask = (q) => new Promise((res) => rl.question(q, (a) => res(a.trim())));
@@ -86,6 +100,32 @@ async function statusLines() {
   L.push(`  ${C.b}${queue.pending().length}${C.x} drafts waiting for your approval`);
   L.push(`  ${C.b}${Object.keys(linkedin.allLeads()).length}${C.x} leads collected`);
   return L;
+}
+
+// The full service board — the same data Telegram and the remote status page
+// show, so all three never disagree about whether something is up.
+async function screenBoard() {
+  const { board } = await import("./lib/services.mjs");
+  banner();
+  out(`  ${C.b}Services${C.x}
+`);
+  out(`  ${C.d}checking…${C.x}`);
+  const b = await board();
+  process.stdout.write("[1A[2K");     // erase the "checking" line
+  const paint = { up: C.green, warn: C.yellow, down: C.red, off: C.gray };
+  let group = "";
+  for (const r of b.rows) {
+    if (r.group !== group) { group = r.group; out(`
+  ${ACCENT}${group}${C.x}`); }
+    out(`  ${paint[r.state]}●${C.x} ${r.label.padEnd(22)} ${C.d}${r.detail.slice(0, 58)}${C.x}`);
+    if (r.url && r.state !== "off") out(`    ${C.d}${r.url}${C.x}`);
+  }
+  out();
+  out(`  ${C.b}${b.counts.up}${C.x} up · ${C.b}${b.counts.warn}${C.x} need attention · ${C.b}${b.counts.down}${C.x} down · ${C.b}${b.pending}${C.x} awaiting approval`);
+  out();
+  rule();
+  out(`  ${C.d}Same board in Telegram: /services   ·   from any device: npm run status${C.x}`);
+  await pause();
 }
 
 async function screenStatus() {
@@ -224,41 +264,123 @@ async function screenServices() {
   }
 }
 
-// -------------------------------------------------------------- text Orion
+// ------------------------------------------------------------ help & support
 
-async function screenSupport() {
-  const { toOrion, relayConfigured } = await import("./lib/relay.mjs");
-  banner();
-  out(`  ${C.b}Text Orion${C.x}\n`);
-  if (!relayConfigured()) {
-    out(`  ${C.yellow}The support line isn't set up on this machine yet.${C.x}\n`);
-    out(`  Email:  ${C.b}${process.env.ORION_SUPPORT_EMAIL || "orionjones99@gmail.com"}${C.x}`);
-    out(`  Phone:  ${C.b}${process.env.ORION_SUPPORT_PHONE || "424-422-5031"}${C.x}`);
-    return pause();
-  }
-  out(`  ${C.d}Goes straight to Orion's phone. Say what you want changed, added,`);
-  out(`  or fixed — plain English is fine. He replies in your Telegram.${C.x}\n`);
-  out(`  ${C.b}1${C.x}  Ask for a change or a new feature`);
-  out(`  ${C.b}2${C.x}  Report something broken`);
-  out(`  ${C.b}3${C.x}  Just a question`);
-  out();
-  const kindPick = await ask(`  choose (or ${C.b}b${C.x} to go back): `);
-  if (kindPick.toLowerCase() === "b" || !kindPick) return;
-  const kind = { "1": "update", "2": "alert", "3": "help" }[kindPick] || "help";
+// Live status, stripped of colour, attached to every support message. Half of
+// remote support is asking "what does your screen say" — this answers it first.
+const plainStatus = async () =>
+  (await statusLines()).map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trim()).filter(Boolean).join("\n");
 
+async function sendSupport(kind, promptText) {
+  const { toOrion } = await import("./lib/relay.mjs");
   out();
-  const msg = await ask(`  ${C.b}What do you need?${C.x}\n  > `);
+  const msg = await ask(`  ${C.b}${promptText}${C.x}\n  > `);
   if (!msg) return;
-
-  // Attach live status to every support message. Half of remote support is
-  // asking "what does it say on your screen" — this answers it up front.
-  const status = (await statusLines()).map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").trim()).filter(Boolean).join("\n");
-  const r = await toOrion(`${msg}\n\n---\nSent from the terminal on ${os.hostname()}\n\n${status}`, { kind });
-
+  const r = await toOrion(`${msg}\n\n---\nSent from the terminal on ${os.hostname()}\n\n${await plainStatus()}`, { kind });
   out();
   if (r.ok) out(`  ${C.green}Sent.${C.x} Orion has it on his phone. He'll reply in your Telegram.`);
   else if (r.spooled) out(`  ${C.yellow}Saved.${C.x} The connection is down right now — it'll send itself automatically.`);
-  else out(`  ${C.red}Couldn't send.${C.x} Email ${process.env.ORION_SUPPORT_EMAIL || "orionjones99@gmail.com"} instead.`);
+  else out(`  ${C.red}Couldn't send.${C.x} Email ${SUPPORT_EMAIL} instead.`);
+  await pause();
+}
+
+async function screenBook() {
+  const bk = await import("./lib/booking.mjs");
+  banner();
+  out(`  ${C.b}Book a call with Orion${C.x}\n`);
+
+  out(`  ${C.d}checking his calendar…${C.x}`);
+  const { ok, slots, why } = await bk.fetchSlots();
+  process.stdout.write("\x1b[1A\x1b[2K");   // erase the "checking" line
+
+  const reason = await ask(`  ${C.b}What's the call about?${C.x}\n  > `);
+  if (!reason) return;
+  const name = process.env.CLIENT_NAME || "";
+
+  if (ok && slots.length) {
+    out(`\n  ${C.b}His next open times${C.x}\n`);
+    slots.forEach((s, i) => out(`  ${C.b}${i + 1}${C.x}  ${s.label}  ${C.d}${s.mode}${C.x}`));
+    out();
+    const pick = await ask(`  pick a number (or ${C.b}b${C.x} to go back): `);
+    const slot = slots[Number(pick) - 1];
+    if (!slot) return;
+    const contact = await ask(`  ${C.d}best number or email to reach you (enter to skip):${C.x} `);
+    const r = await bk.book({ slot, reason, name, contact });
+    out();
+    if (r.confirmed) out(`  ${C.green}Booked — ${slot.label}.${C.x} It's on his calendar and he's been told.`);
+    else out(`  ${C.yellow}Requested — ${slot.label}.${C.x} Orion has it on his phone and will confirm with you.`);
+    return pause();
+  }
+
+  // No live calendar. Do NOT invent times — take theirs and let Orion confirm.
+  out(`\n  ${C.d}(his live calendar isn't reachable from here${why ? `: ${why}` : ""}, so he'll confirm the time)${C.x}\n`);
+  const when = await ask(`  ${C.b}When suits you?${C.x} ${C.d}plain English is fine${C.x}\n  > `);
+  const contact = await ask(`  ${C.d}best number or email to reach you (enter to skip):${C.x} `);
+  const r = await bk.requestCallback({ reason, when, name, contact });
+  out();
+  if (r.ok) out(`  ${C.green}Sent.${C.x} Orion has it and will come back to you with a time.`);
+  else out(`  ${C.yellow}Saved.${C.x} It'll send itself when the connection is back.\n  Or book yourself: ${C.b}${bk.BOOK_URL()}${C.x}`);
+  await pause();
+}
+
+async function screenHelp() {
+  const { relayConfigured } = await import("./lib/relay.mjs");
+  const bk = await import("./lib/booking.mjs");
+  for (;;) {
+    banner();
+    out(`  ${C.b}Help & support${C.x}\n`);
+    if (!relayConfigured()) {
+      out(`  ${C.yellow}The direct line isn't set up on this machine yet.${C.x}\n`);
+      out(`  Book:   ${C.b}${bk.BOOK_URL()}${C.x}`);
+      out(`  Email:  ${C.b}${SUPPORT_EMAIL}${C.x}`);
+      out(`  Phone:  ${C.b}${SUPPORT_PHONE}${C.x}\n`);
+      return pause();
+    }
+    out(`  ${C.d}Everything here reaches Orion directly, with your system status`);
+    out(`  attached so he doesn't have to ask what your screen says.${C.x}\n`);
+    out(`  ${C.b}1${C.x}  ${ACCENT}Book a call${C.x}         ${C.d}pick a time from his calendar${C.x}`);
+    out(`  ${C.b}2${C.x}  Ask for a change     ${C.d}new feature, tweak, different behaviour${C.x}`);
+    out(`  ${C.b}3${C.x}  Report a problem     ${C.d}something's broken${C.x}`);
+    out(`  ${C.b}4${C.x}  Ask a question`);
+    out(`  ${C.b}5${C.x}  What's new           ${C.d}recent updates to your system${C.x}`);
+    out();
+    out(`  ${C.d}Book: ${bk.BOOK_URL()}   Email: ${SUPPORT_EMAIL}   Phone: ${SUPPORT_PHONE}${C.x}`);
+    rule();
+    const a = await ask(`  choose, or ${C.b}b${C.x} to go back: `);
+    if (a.toLowerCase() === "b" || !a) return;
+    if (a === "1") await screenBook();
+    else if (a === "2") await sendSupport("update", "What would you like changed or added?");
+    else if (a === "3") await sendSupport("alert", "What's going wrong?");
+    else if (a === "4") await sendSupport("help", "What's your question?");
+    else if (a === "5") await screenUpdates();
+  }
+}
+
+// Live patch notes. The terminal pulls a feed Orion publishes, so an update he
+// ships shows up in every client's terminal without anyone reinstalling.
+async function screenUpdates() {
+  banner();
+  out(`  ${C.b}What's new${C.x}\n`);
+  let notes = Array.isArray(T.updates) ? T.updates : [];
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 5000);
+    const res = await fetch(UPDATES_URL, { signal: c.signal });
+    clearTimeout(t);
+    if (res.ok) {
+      const j = await res.json();
+      const list = Array.isArray(j) ? j : j.updates || [];
+      const seen = new Set();
+      notes = [...list, ...notes]
+        .filter((u) => u?.text && !seen.has(u.date + u.text) && seen.add(u.date + u.text))
+        .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    }
+  } catch {}
+  if (!notes.length) out(`  ${C.d}Nothing published yet.${C.x}`);
+  for (const u of notes.slice(0, 12)) {
+    out(`  ${ACCENT}${u.date || ""}${C.x}  ${u.text}`);
+  }
+  out();
   await pause();
 }
 
@@ -286,24 +408,24 @@ async function main() {
     const lines = await statusLines();
     for (const l of lines.slice(0, 2)) out(l);
     out();
-    out(`  ${C.b}1${C.x}  Status            ${C.d}what's running right now${C.x}`);
+    out(`  ${C.b}1${C.x}  Services          ${C.d}every system, up or down${C.x}`);
     out(`  ${C.b}2${C.x}  Keys & setup      ${C.d}Telegram, DeepSeek, Reddit${C.x}`);
     out(`  ${C.b}3${C.x}  Accounts          ${C.d}sign in to LinkedIn and socials${C.x}`);
     out(`  ${C.b}4${C.x}  Always-on         ${C.d}run 24/7, survive reboots${C.x}`);
     out(`  ${C.b}5${C.x}  Check everything  ${C.d}full preflight${C.x}`);
-    out(`  ${C.b}6${C.x}  ${ACCENT}Text Orion${C.x}        ${C.d}ask for a change, or get help${C.x}`);
+    out(`  ${C.b}6${C.x}  ${ACCENT}Help & support${C.x}    ${C.d}book Orion, ask for a change, get unstuck${C.x}`);
     out(`  ${C.b}q${C.x}  Quit`);
     out();
     rule();
     out(`  ${C.d}${C.i}${WATERMARK}${C.x}`);
     const a = (await ask(`\n  > `)).toLowerCase();
     if (a === "q" || a === "quit" || a === "exit") break;
-    if (a === "1") await screenStatus();
+    if (a === "1") await screenBoard();
     else if (a === "2") await screenKeys();
     else if (a === "3") await screenLogins();
     else if (a === "4") await screenServices();
     else if (a === "5") await screenSelftest();
-    else if (a === "6") await screenSupport();
+    else if (a === "6") await screenHelp();
   }
   clear();
   out(`  ${ACCENT}${BRAND}${C.x} ${C.d}— still running in the background. Reopen anytime with:${C.x} ${C.b}npm run setup${C.x}\n`);

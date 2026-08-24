@@ -44,6 +44,8 @@ everything works.
 **Control**
 ```
 /status        health of everything
+/services      every system: Tailscale, remote desktop, LinkedIn,
+               Reddit, WhatsApp, socials, jobs, chatbot
 /pause         stop everything
 /resume        start again
 /hours 8 22    when it's allowed to act
@@ -55,6 +57,22 @@ everything works.
 ```
 /orion <message>    texts Orion directly
 ```
+
+## Checking it from anywhere
+
+Option `1` in the setup screen shows every system as green, amber or red —
+Tailscale, Chrome Remote Desktop, the Telegram bridge, LinkedIn, Reddit,
+WhatsApp, each social account, the scheduler and the chatbot.
+
+The same board is a web page you can open from your phone:
+
+```bash
+npm run status
+```
+
+With Tailscale installed it's reachable from any of your devices, anywhere,
+without exposing anything to the public internet. The link and its access token
+are printed when it starts, and it runs automatically once 24/7 mode is on.
 
 ## Set your brief. Really.
 
