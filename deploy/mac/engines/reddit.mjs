@@ -115,18 +115,22 @@ export function cadenceCheck(sub) {
   if (sentToday("reddit") >= s.dailyPostCap) {
     return { ok: false, why: `daily Reddit cap reached (${s.dailyPostCap} posts)` };
   }
-  const last = lastSent("reddit");
-  if (last) {
-    const hrs = (Date.now() - new Date(last.decidedAt).getTime()) / 3600000;
-    if (hrs < s.minHoursBetweenPosts) {
-      return { ok: false, why: `last post was ${hrs.toFixed(1)}h ago; minimum gap is ${s.minHoursBetweenPosts}h` };
-    }
-  }
+  // Per-subreddit first, then the global gap. Both block, but when posting to a
+  // subreddit we hit recently the per-subreddit rule is the one that actually
+  // governs — reporting the 4h global gap would suggest waiting 4h when the
+  // real answer is 24h.
   const lastHere = lastSent("reddit", (i) => String(i.payload?.subreddit || "").toLowerCase() === clean);
   if (lastHere) {
     const hrs = (Date.now() - new Date(lastHere.decidedAt).getTime()) / 3600000;
     if (hrs < s.minHoursPerSubreddit) {
       return { ok: false, why: `already posted to r/${clean} ${hrs.toFixed(1)}h ago; minimum per-subreddit gap is ${s.minHoursPerSubreddit}h` };
+    }
+  }
+  const last = lastSent("reddit");
+  if (last) {
+    const hrs = (Date.now() - new Date(last.decidedAt).getTime()) / 3600000;
+    if (hrs < s.minHoursBetweenPosts) {
+      return { ok: false, why: `last post was ${hrs.toFixed(1)}h ago; minimum gap between any two posts is ${s.minHoursBetweenPosts}h` };
     }
   }
   return { ok: true };
