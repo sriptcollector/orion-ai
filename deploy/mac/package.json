@@ -17,8 +17,9 @@
     "uninstall:service": "bash launchd/uninstall-services.sh",
     "login:whatsapp": "node engines/whatsapp.mjs login",
     "services": "node -e \"import(String.raw`./lib/services.mjs`).then(async m=>console.log(m.renderText(await m.board())))\"",
-    "test": "node test.mjs",
-    "dashboard": "node dashboard.mjs"
+    "test": "node test.mjs && node test-dashboard.mjs",
+    "dashboard": "node dashboard.mjs",
+    "test:dashboard": "node test-dashboard.mjs"
   },
   "engines": {
     "node": ">=20"
